@@ -58,7 +58,11 @@ This repo is dedicated to improving Theano performance on CPU, especially in Int
   * others, experimental codes for different applications which may be merged into master and/or deleted soon
 
 **Installation**
-
+    
+  * Environment Setting
+  
+    Set Intel MKL library path into both LD_LIBRARY_PATH and LIBRARY_PATH
+    
   * Quick Commands
 
     ```
@@ -67,8 +71,28 @@ This repo is dedicated to improving Theano performance on CPU, especially in Int
     python setup.py build
     python setup.py install --user [--mkl]   # Note: using 'mkl' option will check and download MKL if it is not available
     cp intel-theano/theanorc_icc_mkl ~/.theanorc
-    # run benchmark
-    democase/alexnet/benchmark.sh
+    ```
+
+   * Check Intel MKL 
+   
+    ```
+    python theano/theano/sandbox/mkl/tests/test_mkl.py
+         WARNING (theano.gof.cmodule): WARNING: your Theano flags `gcc.cxxflags` specify an `-march=X` flags.
+         It is better to let Theano/g++ find it automatically, but we don't do it now
+         mkl_available: True
+         mkl_version: 20170209
+         .
+         ----------------------------------------------------------------------
+         Ran 1 test in 2.213s
+
+         OK
+    ```
+    
+
+   * Run Benchmark
+    
+    ```
+    python democase/alexnet/benchmark.py
     ```
 
   * Install Guide (recommend to go througth this document and set up optimized softwares)
