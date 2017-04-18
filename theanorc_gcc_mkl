@@ -9,4 +9,7 @@ allow_gc = False
 [gcc]
 cxxflags = -fopenmp -O3 -opt-prefetch=2 -funroll-loops
 [blas]
+# using Intel MKL library
 ldflags = -lmkl_rt
+# using Intel MKLML library
+# ldflags = -lmklml_intel
