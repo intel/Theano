@@ -16,8 +16,8 @@ This repo is dedicated to improving Theano performance on CPU, especially in Int
     - Intel® Xeon Phi™  CPU 7250F @ 1.40GHz, 98G RAM
   * Softwares
     - Script: **[convnet-benchmarks](https://github.com/soumith/convnet-benchmarks/blob/master/theano/benchmark_imagenet.py)**
-    - **[Stock Theano](https://github.com/theano/theano)**, commit ID: 2fa3cecb7572a5c884d3d3cb524ea7b7a741809a
-    - **[Intel Theano](https://github.com/intel/theano)**, commit ID: 3abfbe0d1691ed953621485612c21542a3bfef95
+    - **[Stock Theano](https://github.com/theano/theano)**, commit ID: 2fa3cec
+    - **[Intel Theano](https://github.com/intel/theano)**, commit ID: 00216ef, ver-1.1
   * Terminologies
     - FWD, forward for inference
     - FWD+BWD, forward and backward for training
