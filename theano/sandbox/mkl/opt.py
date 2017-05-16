@@ -104,6 +104,7 @@ class CutMKLDataConversionChain(Optimizer):
             _logger.warning(msg)
             return
 
+
 mkl_seqopt.register('CutMKLDataConversionChain', CutMKLDataConversionChain(),
                     40,
                     'fast_run',
@@ -133,41 +134,38 @@ class ReplaceConvBias(Optimizer):
     def add_requirements(self, fgraph):
         fgraph.attach_feature(toolbox.ReplaceValidate())
 
-    def _check_add_bias_(self, node):
-        out = node.outputs
-        if (isinstance(out[0].clients[0][0].op, tensor.Elemwise) and
-                isinstance(out[0].clients[0][0].op.scalar_op, scalar.Add)):
-            if len(out[0].clients[0][0].inputs) == 2:
-                if out[0].clients[0][0].inputs[0] is out[0]:
-                    bias = out[0].clients[0][0].inputs[1]
-                else:
-                    bias = out[0].clients[0][0].inputs[0]
-                # Get DimShuffle node
-                bias_owner = bias.owner
-                if bias_owner is None:
-                    return bias
-                elif isinstance(bias_owner.op, tensor.DimShuffle) and (bias_owner.inputs[0].owner is None):
-                    return bias_owner.inputs[0]
-                else:
-                    return None
-
-        return None
-
     def _check_grad_bias_(self, node, i):
         assert len(node.outputs[i].clients) >= 2
         op = []
         pre_op = [tensor.DimShuffle, tensor.Elemwise, tensor.DimShuffle]
+        pre_len = len(pre_op)
         for c in node.outputs[i].clients:
             if isinstance(c[0].op, tensor.Sum):
                 c_ = c[0]
-                for i in range(3):
+                for j in range(pre_len):
                     if hasattr(c_.outputs[0], 'clients'):
                         op.append(getattr(c_.outputs[0].clients[0][0], 'op', None))
                         c_ = c_.outputs[0].clients[0][0]
                     else:
                         op.append(None)
 
-                if all([isinstance(op[i], pre_op[i]) for i in range(3)]):
+                if all([isinstance(op[t], pre_op[t]) for t in range(pre_len)]):
+                    return c_.outputs[0]
+
+        op = []
+        pre_op = [tensor.DimShuffle, tensor.Reshape]
+        pre_len = len(pre_op)
+        for c in node.outputs[i].clients:
+            if isinstance(c[0].op, tensor.Sum):
+                c_ = c[0]
+                for j in range(pre_len):
+                    if hasattr(c_.outputs[0], 'clients'):
+                        op.append(getattr(c_.outputs[0].clients[0][0], 'op', None))
+                        c_ = c_.outputs[0].clients[0][0]
+                    else:
+                        op.append(None)
+
+                if all([isinstance(op[t], pre_op[t]) for t in range(pre_len)]):
                     return c_.outputs[0]
 
         return None
@@ -228,7 +226,8 @@ class ReplaceConvBias(Optimizer):
                                     did_something = True
                                 except Exception as e:
                                     raise
-                            elif isinstance(bias_owner.op, tensor.DimShuffle) and (bias_owner.inputs[0].owner is None):
+                            elif (isinstance(bias_owner.op, (tensor.DimShuffle, tensor.Reshape)) and
+                                            (bias_owner.inputs[0].owner is None)):
                                 try:
                                     inp_0 = U2IConv(imshp=imshp, kshp=kshp, border_mode=border_mode, subsample=subsample,
                                                     filter_dilation=filter_dilation)(inp[0])
@@ -334,6 +333,8 @@ class ReplaceConvBias(Optimizer):
                             raise e
                 else:
                     pass
+            # end of for node in topo
+        # end of while
 
 
 # Register the instance of global OPT ReplaceConvBias into mkl_seqopt.
@@ -421,7 +422,7 @@ class ReplaceElemwise(Optimizer):
 mkl_seqopt.register('MKL_ELEMWISE_REPLACE', ReplaceElemwise(), 30, 'fast_run', 'fast_compile', 'mkl')
 
 
-@register_opt()
+# @register_opt()
 @local_optimizer([pool.Pool])
 def local_pool_mkl(node):
     if not mkl_available():
@@ -469,7 +470,7 @@ def local_pool_mkl(node):
         return
 
 
-@register_opt()
+# @register_opt()
 @local_optimizer([pool.MaxPoolGrad, pool.AveragePoolGrad])
 def local_poolGrad_mkl(node):
     if not mkl_available():
@@ -672,8 +673,8 @@ def local_Conv2D_mkl(node):
     if None in node.op.kshp:
         return
 
-    if None in node.op.imshp:
-        return
+    # if None in node.op.imshp:
+    #    return
 
     try:
         image, weight = node.inputs
@@ -715,8 +716,8 @@ def local_ConvGradInputs_mkl(node):
     if None in node.op.kshp:
         return
 
-    if None in node.op.imshp:
-        return
+    # if None in node.op.imshp:
+    #    return
 
     try:
         weight, gz, zshp = node.inputs
@@ -765,8 +766,8 @@ def local_ConvGradWeights_mkl(node):
     if None in node.op.kshp:
         return
 
-    if None in node.op.imshp:
-        return
+    # if None in node.op.imshp:
+    #    return
 
     try:
         image, gz, zshp = node.inputs

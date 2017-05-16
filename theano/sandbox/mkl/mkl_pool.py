@@ -236,7 +236,7 @@ class PoolBase(MKLOp):
         size_t outputStrides[DIMENSION] = {0};
         size_t kernelSize[2] = {0};
         size_t kernelStride[2] = {0};
-        int inputOffset[2] = {0};
+        int inputOffset[4] = {0};
 
         void *x_internal_buffer = NULL;
         void *x_internal_buffer_get_from_previous_op = NULL;
@@ -457,8 +457,16 @@ class Pool(PoolBase):
             kernelSize[1] = kernel_h;
             kernelStride[0] = stride_w;
             kernelStride[1] = stride_h;
-            inputOffset[0] = -pad_w;
-            inputOffset[1] = -pad_h;
+
+            if (%(ignore_border)s) {
+                inputOffset[0] = -pad_w;
+                inputOffset[1] = -pad_h;
+                inputOffset[2] = -pad_w;
+                inputOffset[3] = -pad_h;
+            } else {
+                inputOffset[0] = -pad_w;
+                inputOffset[1] = -pad_h;
+            }
 
             int out_h, out_w; // shape of the output
             int in_h, in_w; // shape of the padded_input
@@ -504,9 +512,9 @@ class Pool(PoolBase):
         #ifdef _MKL_DEBUG_
             std::cout << "inputSize: " << inputSize[3] << "x" << inputSize[2] << "x" << inputSize[1] << "x" << inputSize[0] << std::endl;
             std::cout << "outputSize: " << outputSize[3] << "x" << outputSize[2] << "x" << outputSize[1] << "x" << outputSize[0] << std::endl;
-            std::cout << "pooling region: " << kernelSize[0] << "x" << kernelSize[1] << std::endl;
-            std::cout << "pooling stride: " << kernelStride[0] << "x" << kernelStride[1] << std::endl;
-            std::cout << "padding: " << inputOffset[0] << "x" << inputOffset[1] << std::endl;
+            std::cout << "pooling region: " << kernelSize[1] << "x" << kernelSize[0] << std::endl;
+            std::cout << "pooling stride: " << kernelStride[1] << "x" << kernelStride[0] << std::endl;
+            std::cout << "padding: " << inputOffset[1] << "x" << inputOffset[0] << std::endl;
             std::cout << "ignore_border: " << %(ignore_border)s << std::endl;
         #endif
 
@@ -742,8 +750,16 @@ class PoolGrad(PoolBase):
             kernelSize[1] = kernel_h;
             kernelStride[0] = stride_w;
             kernelStride[1] = stride_h;
-            inputOffset[0] = -pad_w;
-            inputOffset[1] = -pad_h;
+
+            if (%(ignore_border)s) {
+                inputOffset[0] = -pad_w;
+                inputOffset[1] = -pad_h;
+                inputOffset[2] = -pad_w;
+                inputOffset[3] = -pad_h;
+            } else {
+                inputOffset[0] = -pad_w;
+                inputOffset[1] = -pad_h;
+            }
 
             inputSize[0] = PyArray_DIMS(%(x)s)[3];  //w
             inputSize[1] = PyArray_DIMS(%(x)s)[2];  //h

@@ -23,13 +23,13 @@ else:
 
 class test_mkl_conv_forward(unittest.TestCase):
     def test_conv_U2I(self):
-        images = T.dtensor4('inputs')
-        a_internal = U2IConv(imshp=(12, 3, 256, 256),
-                             kshp=(12, 3, 3, 3))(images)
+        images = T.ftensor4('inputs')
+        a_internal = U2IConv(imshp=(32, 16, 128, 128),
+                             kshp=(16, 16, 3, 3))(images)
         out = I2U()(a_internal)
 
         fopt = theano.function([images], out, mode=mode_with_mkl)
-        ival = numpy.random.rand(12, 3, 256, 256).astype(numpy.float64)
+        ival = numpy.random.rand(32, 16, 128, 128).astype(numpy.float32)
         assert numpy.allclose(fopt(ival), ival)
 
     def test_conv_no_bias(self):
@@ -83,18 +83,21 @@ class test_mkl_conv_forward(unittest.TestCase):
             assert numpy.allclose(old_out, new_old)
 
     def test_no_shape(self):
-        images = T.dtensor4('inputs')
-        weights = T.dtensor4('weights')
+        images = T.ftensor4('inputs')
+        weights = T.ftensor4('weights')
 
-        convOut = conv2d(images, weights, filter_shape=(12, 3, 3, 3), filter_flip=False)
+        x = numpy.random.rand(32, 16, 128, 128).astype(numpy.float32)
+        w = numpy.random.rand(16, 16, 3, 3).astype(numpy.float32)
+
+        convOut = conv2d(images, weights, input_shape=None, filter_shape=(16, 16, 3, 3), filter_flip=False)
 
         fopt = theano.function(inputs=[images, weights], outputs=convOut, mode=mode_with_mkl)
 
         fori = theano.function(inputs=[images, weights], outputs=convOut, mode=mode_without_mkl)
 
-        # No optimization for the case image shape is None
-        assert all([not isinstance(n, (Conv2D, U2IConv, I2U)) for n in fopt.maker.fgraph.toposort()])
-        assert str(fopt.maker.fgraph.toposort()) == str(fori.maker.fgraph.toposort())
+        # assert all([not isinstance(n, (Conv2D, U2IConv, I2U)) for n in fopt.maker.fgraph.toposort()])
+        assert str(fopt.maker.fgraph.toposort()) != str(fori.maker.fgraph.toposort())
+        assert numpy.allclose(fori(x, w), fopt(x, w))
 
 
 class test_mkl_conv_backward(unittest.TestCase):
