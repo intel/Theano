@@ -146,5 +146,6 @@ class test_mkl_elemwise(unittest.TestCase):
         assert hash(op1) != hash(op3)
         # assert hash(op1) != hash(op4)
 
+
 if __name__ == '__main__':
     unittest.main()

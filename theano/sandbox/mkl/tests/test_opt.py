@@ -142,9 +142,9 @@ def test_mkl_pool_backward():
     assert topo[8].inputs[0].owner == topo[1]
     assert topo[8].inputs[1].owner == topo[7]
     # poolGrad
-    assert len(topo[9].inputs) == 5
+    assert len(topo[9].inputs) == 6
     assert topo[9].inputs[0].owner == topo[0]
-    assert topo[9].inputs[1].owner == topo[8]
+    assert topo[9].inputs[2].owner == topo[8]
     # U2IGrad
     assert len(topo[10].inputs) == 2
     assert topo[10].inputs[1].owner == topo[9]
@@ -337,9 +337,9 @@ def test_mkl_lrn_backward():
     assert topo[8].inputs[1].owner == topo[7]
 
     # LRNGrad
-    assert len(topo[9].inputs) == 2
+    assert len(topo[9].inputs) == 3
     assert topo[9].inputs[0].owner == topo[0]
-    assert topo[9].inputs[1].owner == topo[8]
+    assert topo[9].inputs[2].owner == topo[8]
 
     # U2IGrad
     assert len(topo[10].inputs) == 2
@@ -458,8 +458,8 @@ def test_mkl_elemwise_sum_backward():
     reluBackward = tensor.grad(reluSum, [x])
     f = theano.function(inputs=[x], outputs=reluBackward, mode=mode_with_mkl)
     topo = f.maker.fgraph.toposort()
-    inputs = f.maker.fgraph.inputs
-    outputs = f.maker.fgraph.outputs
+    # inputs = f.maker.fgraph.inputs
+    # outputs = f.maker.fgraph.outputs
 
     # assert len(topo.op) == 18
     assert isinstance(topo[4].op, mkl_elemwise.ElemwiseSum)
