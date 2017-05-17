@@ -37,6 +37,7 @@ def run_test(direction='forward'):
     else:
         print ("Invalid direction, only forward or backward allowed!")
 
+
 if __name__ == '__main__':
     run_test('forward')
     run_test('backward')

@@ -104,6 +104,7 @@ class CutMKLDataConversionChain(Optimizer):
             _logger.warning(msg)
             return
 
+
 mkl_seqopt.register('CutMKLDataConversionChain', CutMKLDataConversionChain(),
                     40,
                     'fast_run',

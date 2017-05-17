@@ -13,5 +13,6 @@ class TestMKLStatus(unittest.TestCase):
         print ('mkl_available: ' + str(mkl.mkl_available()))
         print ('mkl_version: ' + str(mkl.mkl_version()))
 
+
 if __name__ == '__main__':
     unittest.main()
