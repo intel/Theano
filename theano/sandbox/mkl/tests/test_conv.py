@@ -180,5 +180,6 @@ class test_mkl_conv_backward(unittest.TestCase):
             assert new_out[0].dtype == 'float64'
             assert new_out[2].dtype == 'float64'
 
+
 if __name__ == '__main__':
     unittest.main()

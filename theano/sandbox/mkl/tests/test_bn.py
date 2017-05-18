@@ -90,5 +90,6 @@ class test_mkl_bn_backward(unittest.TestCase):
         tval = numpy.random.rand(5).astype(numpy.float32)
         fgrad(ival, sval, tval)
 
+
 if __name__ == '__main__':
     unittest.main()

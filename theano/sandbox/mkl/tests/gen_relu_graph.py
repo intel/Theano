@@ -38,6 +38,7 @@ def run_test(direction='forward', x=T.ftensor4('x')):
     else:
         print ("Invalid direction, only forward or backward allowed!")
 
+
 if __name__ == '__main__':
     x = T.ftensor4('x_4D')
     run_test('forward', x)
