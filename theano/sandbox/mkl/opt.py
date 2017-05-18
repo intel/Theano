@@ -151,7 +151,7 @@ class ReplaceConvBias(Optimizer):
 
                 if all([isinstance(op[t], pre_op[t]) for t in range(pre_len)]):
                     return c_.outputs[0]
-
+        """
         op = []
         pre_op = [tensor.DimShuffle, tensor.Reshape]
         pre_len = len(pre_op)
@@ -167,7 +167,7 @@ class ReplaceConvBias(Optimizer):
 
                 if all([isinstance(op[t], pre_op[t]) for t in range(pre_len)]):
                     return c_.outputs[0]
-
+        """
         return None
 
     def _check_attributes_(self, node1, node2):
@@ -226,7 +226,7 @@ class ReplaceConvBias(Optimizer):
                                     did_something = True
                                 except Exception as e:
                                     raise
-                            elif (isinstance(bias_owner.op, (tensor.DimShuffle, tensor.Reshape)) and
+                            elif (isinstance(bias_owner.op, (tensor.DimShuffle)) and
                                             (bias_owner.inputs[0].owner is None)):
                                 try:
                                     inp_0 = U2IConv(imshp=imshp, kshp=kshp, border_mode=border_mode, subsample=subsample,
@@ -422,7 +422,7 @@ class ReplaceElemwise(Optimizer):
 mkl_seqopt.register('MKL_ELEMWISE_REPLACE', ReplaceElemwise(), 30, 'fast_run', 'fast_compile', 'mkl')
 
 
-# @register_opt()
+@register_opt()
 @local_optimizer([pool.Pool])
 def local_pool_mkl(node):
     if not mkl_available():
@@ -470,7 +470,7 @@ def local_pool_mkl(node):
         return
 
 
-# @register_opt()
+@register_opt()
 @local_optimizer([pool.MaxPoolGrad, pool.AveragePoolGrad])
 def local_poolGrad_mkl(node):
     if not mkl_available():
