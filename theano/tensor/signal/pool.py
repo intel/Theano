@@ -37,8 +37,8 @@ def max_pool_2d_same_size(input, patch_size):
     return outs
 
 
-def pool_2d(input, ds, ignore_border=None, st=None, padding=(0, 0),
-            mode='max'):
+def pool_2d(input, ws=None, ignore_border=None, stride=None, pad=None,
+            mode='max', ds=None, st=None, padding=(0, 0)):
     """Downscale the input by a specified factor
 
     Takes as input a N-D tensor, where N >= 2. It downscales the input image by
@@ -69,6 +69,15 @@ def pool_2d(input, ds, ignore_border=None, st=None, padding=(0, 0),
         include or exclude it.
 
     """
+    if ws is not None:
+        ds = ws
+
+    if stride is not None:
+        st = stride
+
+    if pad is not None:
+        padding = pad
+
     if input.ndim < 2:
         raise NotImplementedError('pool_2d requires a dimension >= 2')
     if ignore_border is None:

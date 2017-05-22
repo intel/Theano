@@ -79,8 +79,7 @@ class MKLConvBase(gof.Op):
                 do { \\
                     (err) = (f); \\
                     if ((err) != E_SUCCESS) { \\
-                        (PyExc_RuntimeError, "Error in file " \\
-                            "[%s:%d], err code (%d)", __FILE__, __LINE__, err); \\
+                        printf("Error in file [%s:%d], err code (%d)", __FILE__, __LINE__, err); \\
                     } \\
                 } while(0)
         """
@@ -148,7 +147,7 @@ class MKLConvBase(gof.Op):
             dnnPrimitive_t pConvolutionBwdBias;
 
             dnnPrimitive_t bwdf_weight_to_fwd_internal;
-            dnnPrimitive_t bwdf_wegith_to_usr;
+            dnnPrimitive_t bwdf_weight_to_usr;
             dnnPrimitive_t bwdd_weight_to_bwdd_internal;
 
             dnnLayout_t bwdf_weight_internal_layout;
@@ -251,7 +250,7 @@ class MKLConvBase(gof.Op):
             pConvolutionBwdBias = NULL;
 
             bwdf_weight_to_fwd_internal = NULL;
-            bwdf_wegith_to_usr = NULL;
+            bwdf_weight_to_usr = NULL;
             bwdd_weight_to_bwdd_internal = NULL;
 
             bwdf_weight_internal_layout = NULL;
@@ -365,27 +364,30 @@ class Conv2D(MKLConvBase):
 
         z, = out_
 
-        if self.imshp is None:
-            imshp = node.inputs[0].shape
-        else:
-            imshp = self.imshp
-        in_n, in_c, in_h, in_w = imshp
-
-        if self.kshp is None:
+        if None in self.kshp:
             kshp = node.inputs[1].shape
         else:
             kshp = self.kshp
 
+        if None in self.imshp:
+            in_n, in_c, in_h, in_w = 0, 0, 0, 0
+            o_n, o_c, o_h, o_w = 0, 0, 0, 0
+            imshp = node.inputs[0].shape
+        else:
+            imshp = self.imshp
+            in_n, in_c, in_h, in_w = imshp
+            o_n, o_c, o_h, o_w = get_conv_output_shape(imshp, kshp, self.border_mode, self.subsample)
+
         if node.inputs[1].type.ndim == 5:
             grp, k_n, k_c, k_h, k_w = kshp
-            assert in_c == k_c * grp
+            # assert in_c == k_c * grp
         else:
             k_n, k_c, k_h, k_w = kshp
             grp = 1
-            assert in_c == k_c
+            # assert in_c == k_c
 
-        outshp = self.infer_shape(node, [imshp, kshp])
-        o_n, o_c, o_h, o_w = outshp[0]
+        # outshp = self.infer_shape(node, [imshp, kshp])
+        # o_n, o_c, o_h, o_w = outshp[0]
 
         dH, dW = self.subsample
 
@@ -435,6 +437,14 @@ class Conv2D(MKLConvBase):
                 imageSize[1] = %(in_h)s;  //h
                 imageSize[2] = %(in_c)s;  //c
                 imageSize[3] = %(in_n)s;  //n
+
+                if (0 == imageSize[0] || 0 == imageSize[1] || 0 == imageSize[2] || 0 == imageSize[3]) {
+                    imageSize[0] = PyArray_DIMS(%(image)s)[3];
+                    imageSize[1] = PyArray_DIMS(%(image)s)[2];
+                    imageSize[2] = PyArray_DIMS(%(image)s)[1];
+                    imageSize[3] = PyArray_DIMS(%(image)s)[0];
+                }
+
                 imageStride[0] = 1;
                 imageStride[1] = imageSize[0];
                 imageStride[2] = imageSize[0] * imageSize[1];
@@ -455,13 +465,21 @@ class Conv2D(MKLConvBase):
                 zSize[1] = %(o_h)s;
                 zSize[2] = %(o_c)s;
                 zSize[3] = %(o_n)s;
+
+                if (0 == zSize[0] || 0 == zSize[1] || 0 == zSize[2] || 0 == zSize[3]) {
+                    zSize[0] = (imageSize[0] - 2 * convPadding[0] - weightSize[0]) / convStride[0] + 1;
+                    zSize[1] = (imageSize[1] - 2 * convPadding[1] - weightSize[1]) / convStride[1] + 1;
+                    zSize[2] = weightSize[3];
+                    zSize[3] = imageSize[3];
+                }
+
                 zStride[0] = 1;
                 zStride[1] = zSize[0];
                 zStride[2] = zSize[0] * zSize[1];
                 zStride[3] = zSize[0] * zSize[1] * zSize[2];
 
                 if(%(withBias)s) {
-                    biasSize[0] = %(o_c)s;
+                    biasSize[0] = zSize[2];
                     biasStride[0] = 1;
                 }
 
@@ -483,14 +501,22 @@ class Conv2D(MKLConvBase):
             if (NULL == weight_usr_layout) {
                 CHECK_ERR( dnnLayoutCreate_%(precision)s(&weight_usr_layout, fdimension, weightSize, weightStride), err );
             }
+
             if (NULL == image_internal_layout) {
                 CHECK_ERR( dnnLayoutCreateFromPrimitive_%(precision)s(&image_internal_layout,
                            pConvolutionFwd, dnnResourceSrc), err );
             }
+
             if (NULL == weight_internal_layout) {
                 CHECK_ERR( dnnLayoutCreateFromPrimitive_%(precision)s(&weight_internal_layout,
                            pConvolutionFwd, dnnResourceFilter), err );
             }
+
+            if (%(withBias)s && NULL == bias_internal_layout) {
+                CHECK_ERR( dnnLayoutCreateFromPrimitive_%(precision)s(&bias_internal_layout,
+                           pConvolutionFwd, dnnResourceBias), err );
+            }
+
             if (NULL == z_internal_layout) {
                 CHECK_ERR( dnnLayoutCreateFromPrimitive_%(precision)s(&z_internal_layout,
                            pConvolutionFwd, dnnResourceDst), err );
@@ -568,16 +594,15 @@ class Conv2D(MKLConvBase):
                         CHECK_ERR( dnnConversionCreate_%(precision)s(&weight_to_internal, weight_usr_layout, weight_internal_layout), err );
                     }
 
-                    if (%(withBias)s && !dnnLayoutCompare_%(precision)s(bias_usr_layout, bias_internal_layout)) {
-                        if (NULL == bias_to_internal) {
+                }
+                if (%(withBias)s && !dnnLayoutCompare_%(precision)s(bias_usr_layout, bias_internal_layout)) {
+                    if (NULL == bias_to_internal) {
                         CHECK_ERR( dnnConversionCreate_%(precision)s(&bias_to_internal, bias_usr_layout, bias_internal_layout), err );
-                        }
                     }
-
                 }
             }
 
-            #if __SUPPORT_USER_PARAMS__
+            #ifndef __CONV_WEIGHT_INTERNAL__
                 if (weight_to_internal) {
                     if (NULL == weight_buf_tmp) {
                         CHECK_ERR( dnnAllocateBuffer_%(precision)s((void**)&weight_buf_tmp, weight_internal_layout), err );
@@ -597,7 +622,7 @@ class Conv2D(MKLConvBase):
                 } else {
                     conv_res[dnnResourceBias] = bias_buf;
                 }
-            #else //__SUPPORT_USER_PARAMS__
+            #else //__CONV_WEIGHT_INTERNAL__
                 if (1 == first_run) {
                     if (weight_to_internal) {
                         if (NULL == weight_buf_tmp) {
@@ -625,25 +650,6 @@ class Conv2D(MKLConvBase):
                 CHECK_ERR( dnnAllocateBuffer_%(precision)s((void**)&z_buf, z_internal_layout), err );
             }
             conv_res[dnnResourceDst] = z_buf;
-
-            #if __MKL_DEBUG__
-                _image_size = dnnLayoutGetMemorySize_%(precision)s(*image_internal_layout_buf);
-                _weight_size = dnnLayoutGetMemorySize_%(precision)s(weight_internal_layout);
-                _z_size = dnnLayoutGetMemorySize_%(precision)s(z_internal_layout);
-                bias_size = dnnLayoutGetMemorySize_%(precision)s(bias_internal_layout);
-                std::cout << "forward, pConvolution = @" << pConvolutionFwd << std::endl;
-                std::cout<<"x size: "<<imageSize[3]<<" x "<<imageSize[2]<<" x "<<imageSize[1]<<" x "<<imageSize[0]<<", acutal size: "<<_image_size<<std::endl;
-                std::cout<<"x buffer ptr: "<<image_buf<<std::endl;
-                std::cout<<"weight size: "<<weightSize[3]<<" x "<<weightSize[2]<<" x "<<weightSize[1]<<" x "<<weightSize[0]<<", actual size: "<<_weight_size<<std::endl;
-                std::cout<<"weight buffer ptr: "<<weight_buf<<std::endl;
-                std::cout<<"z size: "<<zSize[3]<<" x "<<zSize[2]<<" x "<<zSize[1]<<" x "<<zSize[0]<<", actual size: "<<_z_size<<std::endl;
-                std::cout << "bias_size = " << bias_size << std::endl;
-                std::cout<<"z buffer ptr: "<<z_buf<<std::endl;
-                std::cout << "forward, pConvolution = @" << pConvolutionFwd << std::endl;
-                std::cout << "forward, conv_res[Src] = @" << conv_res[dnnResourceSrc] << std::endl;
-                std::cout << "forward, conv_res[Filter] = @" << conv_res[dnnResourceFilter] << std::endl;
-                std::cout << "forward, conv_res[Dst] = @" << conv_res[dnnResourceDst] << std::endl;
-            #endif
 
             //Execute convolution forward pass
             CHECK_ERR( dnnExecute_%(precision)s(pConvolutionFwd, (void**)conv_res), err );
@@ -736,33 +742,34 @@ class ConvGradInputs(MKLConvBase):
     def c_code(self, node, name, inp, out_, sub):
         image, weights, gradz = inp
         imagegrad, = out_
-        if self.imshp is None:
-            imshp = node.inputs[0].shape
-        else:
-            imshp = self.imshp
-        in_n, in_c, in_h, in_w = imshp
 
-        if self.kshp is None:
+        if None in self.kshp:
             kshp = node.inputs[1].shape
         else:
             kshp = self.kshp
-
-        if node.inputs[1].type.ndim == 5:
-            grp, k_n, k_c, k_h, k_w = kshp
-            assert in_c == k_c * grp
-        else:
-            grp = 1
-            k_n, k_c, k_h, k_w = kshp
-            assert in_c == k_c
 
         if node.inputs[1].type.ndim == 5:
             tshp = [kshp[1] * kshp[0], kshp[2] * kshp[0], kshp[3], kshp[4]]
         else:
             tshp = [kshp[0], kshp[1], kshp[2], kshp[3]]
 
-        outshp = get_conv_output_shape(imshp, tshp, self.border_mode, self.subsample)
+        if None in self.imshp:
+            imshp = node.inputs[0].shape
+            in_n, in_c, in_h, in_w = 0, 0, 0, 0
+            o_n, o_c, o_h, o_w = 0, 0, 0, 0
+        else:
+            imshp = self.imshp
+            in_n, in_c, in_h, in_w = imshp
+            outshp = get_conv_output_shape(imshp, tshp, self.border_mode, self.subsample)
+            o_n, o_c, o_h, o_w = outshp
 
-        o_n, o_c, o_h, o_w = outshp
+        if node.inputs[1].type.ndim == 5:
+            grp, k_n, k_c, k_h, k_w = kshp
+            # assert in_c == k_c * grp
+        else:
+            grp = 1
+            k_n, k_c, k_h, k_w = kshp
+            # assert in_c == k_c
 
         dH, dW = self.subsample
 
@@ -802,6 +809,14 @@ class ConvGradInputs(MKLConvBase):
                 imageSize[1] = %(in_h)s;  //h
                 imageSize[2] = %(in_c)s;  //c
                 imageSize[3] = %(in_n)s;  //n
+
+                if (0 == imageSize[0] || 0 == imageSize[1] || 0 == imageSize[2] || 0 == imageSize[3]) {
+                    imageSize[0] = PyArray_DIMS(%(image)s)[3];
+                    imageSize[1] = PyArray_DIMS(%(image)s)[2];
+                    imageSize[2] = PyArray_DIMS(%(image)s)[1];
+                    imageSize[3] = PyArray_DIMS(%(image)s)[0];
+                }
+
                 imageStride[0] = 1;
                 imageStride[1] = imageSize[0];
                 imageStride[2] = imageSize[0] * imageSize[1];
@@ -822,6 +837,14 @@ class ConvGradInputs(MKLConvBase):
                 zSize[1] = %(o_h)s;
                 zSize[2] = %(o_c)s;
                 zSize[3] = %(o_n)s;
+
+                if (0 == zSize[0] || 0 == zSize[1] || 0 == zSize[2] || 0 == zSize[3]) {
+                    zSize[0] = (imageSize[0] - 2 * convPadding[0] - weightSize[0]) / convStride[0] + 1;
+                    zSize[1] = (imageSize[1] - 2 * convPadding[1] - weightSize[1]) / convStride[1] + 1;
+                    zSize[2] = weightSize[3];
+                    zSize[3] = imageSize[3];
+                }
+
                 zStride[0] = 1;
                 zStride[1] = zSize[0];
                 zStride[2] = zSize[0] * zSize[1];
@@ -867,47 +890,58 @@ class ConvGradInputs(MKLConvBase):
                                 (long long)(PyArray_DIMS(%(image)s))[2], (long long)(PyArray_DIMS(%(image)s))[3]);
                     %(fail)s
                 }
-           }
+            }
 
-           //weight use its own buffer
-           weight_buf = (%(dtype)s*)PyArray_DATA(%(weight)s);
+            //weight use its own buffer
+            weight_buf = (%(dtype)s*)PyArray_DATA(%(weight)s);
 
-           //get internal layout for gradz from previous Op
-           gradz_internal_layout = ((dnnLayout_t*)PyArray_DATA(%(gradz)s))[0];
-           //get internal buffer for gradz from previous op
-           gradz_buf = ((void **)PyArray_DATA(%(gradz)s))[1];
+            //get internal layout for gradz from previous Op
+            gradz_internal_layout = ((dnnLayout_t*)PyArray_DATA(%(gradz)s))[0];
+            //get internal buffer for gradz from previous op
+            gradz_buf = ((void **)PyArray_DATA(%(gradz)s))[1];
 
-           conv_res[dnnResourceDiffDst] = gradz_buf;
+            conv_res[dnnResourceDiffDst] = gradz_buf;
 
-           #if __SUPPORT_USER_PARAMS__
-               if(NULL == weight_usr_layout) {
-                   CHECK_ERR( dnnLayoutCreate_%(precision)s(&weight_usr_layout, fdimension, weightSize, weightStride), err );
-               }
-               if (weight_to_internal) {
-                   if(NULL == weight_buf_tmp) {
-                       CHECK_ERR( dnnAllocateBuffer_%(precision)s((void**)&weight_buf_tmp, weight_internal_layout), err );
-                   }
-                   CHECK_ERR( dnnConversionExecute_%(precision)s(weight_to_internal, weight_buf, weight_buf_tmp), err );
-               } else {
-                   weight_buf_tmp = weight_buf;
-               }
-           #else
-               if (1 == first_run) {
-                   if (!dnnLayoutCompare_%(precision)s(fwd_weight_internal_layout, weight_internal_layout)) {
-                       if(NULL == bwdd_weight_to_bwdd_internal) {
-                           CHECK_ERR( dnnConversionCreate_%(precision)s(&bwdd_weight_to_bwdd_internal, fwd_weight_internal_layout, weight_internal_layout), err );
-                       }
-                   }
-               }
-               if (bwdd_weight_to_bwdd_internal) {
-                   if(NULL == weight_buf_tmp) {
-                       CHECK_ERR( dnnAllocateBuffer_%(precision)s((void**)&weight_buf_tmp, weight_internal_layout), err );
-                   }
-                   CHECK_ERR( dnnConversionExecute_%(precision)s(bwdd_weight_to_bwdd_internal, weight_buf, weight_buf_tmp), err );
-               } else {
-                   weight_buf_tmp = weight_buf;
-               }
-           #endif
+            #ifndef __CONV_WEIGHT_INTERNAL__
+                if(NULL == weight_usr_layout) {
+                    CHECK_ERR( dnnLayoutCreate_%(precision)s(&weight_usr_layout, fdimension, weightSize, weightStride), err );
+                }
+
+                if (!dnnLayoutCompare_%(precision)s(weight_usr_layout, weight_internal_layout)) {
+                    if (NULL == weight_to_internal) {
+                        CHECK_ERR( dnnConversionCreate_%(precision)s(&weight_to_internal,
+                                                                     weight_usr_layout,
+                                                                     weight_internal_layout), err);
+                    }
+                }
+
+                if (weight_to_internal) {
+                    if(NULL == weight_buf_tmp) {
+                        CHECK_ERR( dnnAllocateBuffer_%(precision)s((void**)&weight_buf_tmp, weight_internal_layout), err );
+                    }
+
+                    CHECK_ERR( dnnConversionExecute_%(precision)s(weight_to_internal, weight_buf, weight_buf_tmp), err );
+                } else {
+                    weight_buf_tmp = weight_buf;
+                }
+            #else
+                if (1 == first_run) {
+                    if (!dnnLayoutCompare_%(precision)s(fwd_weight_internal_layout, weight_internal_layout)) {
+                        if(NULL == bwdd_weight_to_bwdd_internal) {
+                            CHECK_ERR( dnnConversionCreate_%(precision)s(&bwdd_weight_to_bwdd_internal,
+                                                                         fwd_weight_internal_layout, weight_internal_layout), err );
+                        }
+                    }
+                }
+                if (bwdd_weight_to_bwdd_internal) {
+                    if(NULL == weight_buf_tmp) {
+                        CHECK_ERR( dnnAllocateBuffer_%(precision)s((void**)&weight_buf_tmp, weight_internal_layout), err );
+                    }
+                    CHECK_ERR( dnnConversionExecute_%(precision)s(bwdd_weight_to_bwdd_internal, weight_buf, weight_buf_tmp), err );
+                } else {
+                    weight_buf_tmp = weight_buf;
+                }
+            #endif
 
            conv_res[dnnResourceFilter] = weight_buf_tmp;
 
@@ -927,13 +961,17 @@ class ConvGradInputs(MKLConvBase):
            if (1 == first_run) {
                if (!dnnLayoutCompare_%(precision)s(image_internal_layout, image_internal_layout_from_previous)) {
                    if (NULL == internal_to_internal_image) {
-                       CHECK_ERR( dnnConversionCreate_%(precision)s(&internal_to_internal_image, image_internal_layout, image_internal_layout_from_previous), err );
+                       CHECK_ERR( dnnConversionCreate_%(precision)s(&internal_to_internal_image,
+                                                                    image_internal_layout,
+                                                                    image_internal_layout_from_previous), err );
                    }
                }
            }
+
            if (internal_to_internal_image) {
                if (NULL == image_buf_to_previous) {
-                   CHECK_ERR( dnnAllocateBuffer_%(precision)s((void**)&image_buf_to_previous, image_internal_layout_from_previous), err );
+                   CHECK_ERR( dnnAllocateBuffer_%(precision)s((void**)&image_buf_to_previous,
+                                                              image_internal_layout_from_previous), err );
                }
                CHECK_ERR( dnnConversionExecute_%(precision)s(internal_to_internal_image, image_buf, image_buf_to_previous), err );
            } else {
@@ -994,13 +1032,7 @@ class ConvGradWeights(MKLConvBase):
             bias = None
             weightgrad, = out_
 
-        if self.imshp is None:
-            imshp = node.inputs[0].shape
-        else:
-            imshp = self.imshp
-        in_n, in_c, in_h, in_w = imshp
-
-        if self.kshp is None:
+        if None in self.kshp:
             kshp = node.inputs[1].shape
         else:
             kshp = self.kshp
@@ -1008,12 +1040,22 @@ class ConvGradWeights(MKLConvBase):
         if node.inputs[1].type.ndim == 5:
             grp, k_n, k_c, k_h, k_w = kshp
             tshp = [kshp[1] * kshp[0], kshp[2] * kshp[0], kshp[3], kshp[4]]
-            assert in_c == k_c * grp
+            # assert in_c == k_c * grp
         else:
             k_n, k_c, k_h, k_w = kshp
             grp = 1
             tshp = [kshp[0], kshp[1], kshp[2], kshp[3]]
-            assert in_c == k_c
+            # assert in_c == k_c
+
+        if None in self.imshp:
+            in_n, in_c, in_h, in_w = 0, 0, 0, 0
+            o_n, o_c, o_h, o_w = 0, 0, 0, 0
+            imshp = node.inputs[0].shape
+        else:
+            imshp = self.imshp
+            in_n, in_c, in_h, in_w = imshp
+            outshp = get_conv_output_shape(imshp, tshp, self.border_mode, self.subsample)
+            o_n, o_c, o_h, o_w = outshp
 
         if bias is not None:
             sub['bias'] = bias
@@ -1022,10 +1064,6 @@ class ConvGradWeights(MKLConvBase):
         else:
             withBias = 0
         sub['withBias'] = withBias
-
-        outshp = get_conv_output_shape(imshp, tshp, self.border_mode, self.subsample)
-
-        o_n, o_c, o_h, o_w = outshp
 
         dH, dW = self.subsample
         if self.border_mode == 'valid':
@@ -1068,6 +1106,14 @@ class ConvGradWeights(MKLConvBase):
                 imageSize[1] = %(in_h)s;  //h
                 imageSize[2] = %(in_c)s;  //c
                 imageSize[3] = %(in_n)s;  //n
+
+                if (0 == imageSize[0] || 0 == imageSize[1] || 0 == imageSize[2] || 0 == imageSize[3]) {
+                    imageSize[0] = PyArray_DIMS(%(image)s)[3];
+                    imageSize[1] = PyArray_DIMS(%(image)s)[2];
+                    imageSize[2] = PyArray_DIMS(%(image)s)[1];
+                    imageSize[3] = PyArray_DIMS(%(image)s)[0];
+                }
+
                 imageStride[0] = 1;
                 imageStride[1] = imageSize[0];
                 imageStride[2] = imageSize[0] * imageSize[1];
@@ -1083,17 +1129,26 @@ class ConvGradWeights(MKLConvBase):
                 weightStride[2] = weightSize[0] * weightSize[1];
                 weightStride[3] = weightSize[0] * weightSize[1] * weightSize[2];
                 weightStride[4] = weightSize[0] * weightSize[1] * weightSize[2] * weightSize[3];
+
                 zSize[0] = %(o_w)s;
                 zSize[1] = %(o_h)s;
                 zSize[2] = %(o_c)s;
                 zSize[3] = %(o_n)s;
+
+                if (0 == zSize[0] || 0 == zSize[1] || 0 == zSize[2] || 0 == zSize[3]) {
+                    zSize[0] = (imageSize[0] - 2 * convPadding[0] - weightSize[0]) / convStride[0] + 1;
+                    zSize[1] = (imageSize[1] - 2 * convPadding[1] - weightSize[1]) / convStride[1] + 1;
+                    zSize[2] = weightSize[3];
+                    zSize[3] = imageSize[3];
+                }
+
                 zStride[0] = 1;
                 zStride[1] = zSize[0];
                 zStride[2] = zSize[0] * zSize[1];
                 zStride[3] = zSize[0] * zSize[1] * zSize[2];
 
                 if( %(withBias)s ) {
-                    biasSize[0] = %(o_c)s;
+                    biasSize[0] = zSize[2];
                     biasStride[0] = 1;
                 }
 
@@ -1280,7 +1335,7 @@ class ConvGradWeights(MKLConvBase):
                 }
             }
 
-            #if __SUPPORT_USER_PARAMS__
+            #ifndef __CONV_WEIGHT_INTERNAL__
                 if(NULL == weight_usr_layout) {
                     dnnLayoutCreate_%(precision)s(&weight_usr_layout, fdimension, weightSize, weightStride);
                 }
@@ -1289,30 +1344,37 @@ class ConvGradWeights(MKLConvBase):
                     dnnLayoutCreate_%(precision)s(&bias_usr_layout, 1, biasSize, biasStride);
                 }
 
-                if (bwdf_weight_to_fwd_internal) {
-                    if (NULL == bwdf2fwd_weight_buf) {
-                        CHECK_ERR( dnnAllocateBuffer_%(precision)s((void**)&bwdf2fwd_weight_buf, fwd_weight_internal_layout), err );
+                if (!dnnLayoutCompare_%(precision)s(weight_usr_layout, weight_internal_layout)) {
+                    if (NULL == bwdf_weight_to_usr) {
+                        CHECK_ERR( dnnConversionCreate_%(precision)s(&bwdf_weight_to_usr,
+                                                                     bwdf_weight_internal_layout,
+                                                                     weight_usr_layout), err);
                     }
-                    CHECK_ERR( dnnConversionExecute_%(precision)s(bwdf_weight_to_fwd_internal, weight_buf_tmp, bwdf2fwd_weight_buf), err );
-                } else {
-                    bwdf2fwd_weight_buf = weight_buf_tmp;
                 }
 
-                if (NULL == bwdf_wegith_to_usr) {
-                    CHECK_ERR( dnnConversionCreate_%(precision)s(&bwdf_wegith_to_usr, fwd_weight_internal_layout, weight_usr_layout), err );
+                if (bwdf_weight_to_usr) {
+                    CHECK_ERR( dnnConversionExecute_%(precision)s(bwdf_weight_to_usr, weight_buf_tmp, weight_buf), err);
+                } else {
+                    memcpy((void*)weight_buf, weight_buf_tmp, dnnLayoutGetMemorySize_%(precision)s(bwdf_weight_internal_layout));
                 }
-                dnnConversionExecute_%(precision)s(bwdf_wegith_to_usr, bwdf2fwd_weight_buf, weight_buf);
 
                 //no need to do conversion for bias
                 if (%(withBias)s) {
-                    if(NULL == bias_buf_tmp) {
-                        dnnAllocateBuffer_%(precision)s((void**)&bias_buf_tmp, bias_usr_layout);
+                    if (!dnnLayoutCompare_%(precision)s(bias_internal_layout, bias_usr_layout)) {
+                        if (NULL == bias_from_internal) {
+                            CHECK_ERR( dnnConversionCreate_%(precision)s(&bias_from_internal,
+                                                                         bias_internal_layout,
+                                                                         bias_usr_layout), err);
+                        }
                     }
-                    if(NULL == bias_from_internal) {
-                         dnnConversionCreate_%(precision)s(&bias_from_internal, bias_internal_layout, bias_usr_layout);
+
+                    if (bias_from_internal) {
+                        if(NULL == bias_buf_tmp) {
+                            dnnAllocateBuffer_%(precision)s((void**)&bias_buf_tmp, bias_usr_layout);
+                        }
+                        CHECK_ERR( dnnConversionExecute_%(precision)s(bias_from_internal, (void*)bias_buf, bias_buf_tmp), err);
+                        memcpy((void*)bias_buf, (void*)bias_buf_tmp, dnnLayoutGetMemorySize_%(precision)s(bias_usr_layout));
                     }
-                    dnnConversionExecute_%(precision)s(bias_from_internal, bias_buf, bias_buf_tmp);
-                    memcpy(bias_buf, bias_buf_tmp, dnnLayoutGetMemorySize_%(precision)s(bias_usr_layout));
                 }
             #else
                 if (bwdf_weight_to_fwd_internal) {
