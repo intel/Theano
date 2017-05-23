@@ -15,12 +15,15 @@
 #define Py_TYPE(o) ((o)->ob_type)
 #endif
 
-#define MAX_NDIM     (16)
-#define MKL_FLOAT32  (11)
-#define MKL_FLOAT64  (12)
+// MNDA stands for MklNDArray
+#define MNDA_MAX_NDIM   (16)
+#define MNDA_DATA       (0)
+#define MNDA_WORKSPACE  (1)
+#define MNDA_FLOAT32    (11)
+#define MNDA_FLOAT64    (12)
 
-char* MKL_TYPE[] = {"", "", "", "int16", "", "int32", "", "int64",
-                    "", "", "", "float32", "float64", ""};
+char* MNDA_TYPE[] = {"", "", "", "int16", "", "int32", "", "int64",
+                     "", "", "", "float32", "float64", ""};
 
 #if PY_MAJOR_VERSION >= 3
 // Py3k treats all ints as longs. This one is not caught by npy_3kcompat.h.
@@ -54,16 +57,18 @@ char* MKL_TYPE[] = {"", "", "", "int16", "", "int32", "", "int64",
 typedef struct __MKLNdarray__{
 
     PyObject_HEAD
-    PyObject * base;
+    PyObject * base;        // reference for private_layout/data/workspace
 
     /* Type-specific fields go here. */
-    int         nd;                             // the number of dimensions of the tensor, maximum is 16 (MAX_NDIM).
-    int         dtype;                          // an integer type number is given here.
-    size_t      data_size;                      // the number of bytes allocated for mkl_data
-    size_t      user_structure[2 * MAX_NDIM];   // user layout: [size0, size1, ..., stride0, stride1, ..., 0, 0].
-    dnnLayout_t private_layout;                 // layout instance create by MKL APIs
-    void*       private_data;                   // data buffer
-    void*       private_workspace;              // computation workspace for forward and backward
+    int         nd;                                 // the number of dimensions of the tensor, maximum is 16 (MNDA_MAX_NDIM).
+    int         dtype;                              // an integer type number is given here.
+    size_t      data_size;                          // the number of bytes allocated for private_data
+    size_t      workspace_size;                     // the number of bytes allocated for private_workspace
+    size_t      user_structure[2 * MNDA_MAX_NDIM];  // user layout: [size0, size1, ..., stride0, stride1, ..., 0, 0].
+    dnnLayout_t private_layout;                     // layout instance create by MKL APIs
+    void*       private_data;                       // data buffer
+    dnnLayout_t private_layout_ws;                  // layout for workspace
+    void*       private_workspace;                  // computation workspace for forward and backward
 }MKLNdarray;
 
 
