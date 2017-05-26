@@ -5,6 +5,8 @@ from theano.tensor.blas import ldflags
 from theano.gradient import grad_undefined
 from theano.sandbox.mkl import mkl_helper, basic_ops
 
+from six import integer_types
+
 
 class Concatenate(basic_ops.MKLOp, Join):
     __props__ = ()
@@ -132,6 +134,11 @@ class Concatenate(basic_ops.MKLOp, Join):
 
         ccode = """
         int axis = ((%(adtype)s *)PyArray_DATA(%(axis)s))[0];
+        if (axis != 1) {
+            PyErr_Format(PyExc_RuntimeError, "MKL Concatenate only supports axis=1, but got %%d!", axis);
+            %(fail)s
+        }
+
         int ndim = PyArray_NDIM(%(input_1)s);
         if (axis < -ndim) {
             PyErr_Format(PyExc_IndexError,
@@ -317,6 +324,10 @@ class ConcatenateGrad(basic_ops.MKLOp):
 
         ccode = """
         int axis = ((%(adtype)s *)PyArray_DATA(%(axis)s))[0];
+        if (axis != 1) {
+            PyErr_Format(PyExc_RuntimeError, "MKL ConcatenateGrad only supports axis=1, but got %%d!", axis);
+            %(fail)s
+        }
 
         if (NULL == gx_internal_buffer) {
             gx_internal_buffer = (void**)malloc(%(num_of_gx)s * sizeof(void*));

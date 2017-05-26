@@ -63,7 +63,7 @@ class TestMKLConcatenate(unittest.TestCase):
 
             utt.assert_allclose(output_mkl, output_ref)
 
-    def test_relu_grad(self):
+    def test_concatenate_grad(self):
         seed = utt.fetch_seed()
         rng = numpy.random.RandomState(seed)
 
