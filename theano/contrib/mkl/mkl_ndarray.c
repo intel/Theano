@@ -6,18 +6,17 @@
 
 
 int MKLNdarray_Check(const PyObject *ob);
-PyObject* MKLNdarray_New(int nd, int typenum);
 int MKLNdarray_CopyFromArray(MKLNdarray *self, PyArrayObject *obj);
+PyObject* MKLNdarray_New(int nd, int typenum);
 
 
 /*
  * This function is called in MKLNdarray_dealloc.
  *
- * Release all allocated buffer and layout in self.
+ * Release all allocated buffer and layout in input self.
  *
- * If private_layout is a reference from another ndarray,
- * do not free it in this ndarray.
- *
+ * If buffer/layout is reference of another MKLNdarray, decrease
+ * the reference count of base MKLNdarray.
  */
 static int
 MKLNdarray_uninit(MKLNdarray *self) {
@@ -656,7 +655,7 @@ int MKLNdarray_create_buffer_from_layout(MKLNdarray *self, int type) {
  *       MNDA_WORKSPACE: copy private_layout_ws
  *
  */
-int MKLNdarray_copy_layout(MKLNdarray *self, const MKLNdarray *other, int type) {
+int MKLNdarray_copy_layout(MKLNdarray *self, MKLNdarray *other, int type) {
     if (NULL == self || NULL == other) {
         PyErr_SetString(PyExc_RuntimeError,
                         "MKLNdarray_copy_layout: input MKLNdarray* self or other is NULL");
@@ -816,17 +815,17 @@ int MKLNdarray_CopyFromArray(MKLNdarray *self, PyArrayObject *obj) {
                      ndim, MNDA_MAX_NDIM);
         return -1;
     }
-    
+
     self->dtype = typenum;
     self->nd = ndim;
-    
+
     PyArrayObject* py_src = (PyArrayObject*)PyArray_ContiguousFromAny((PyObject*)obj, typenum, self->nd, self->nd);
     if (!py_src) {
         PyErr_SetString(PyExc_RuntimeError,
                         "MKLNdarray_CopyFromArray: fail to cast obj to contiguous array");
         return -1;
     }
-    
+
     size_t dims[MNDA_MAX_NDIM] = {0};
     size_t user_size = 1;
 
@@ -946,7 +945,7 @@ PyObject* MKLNdarray_create_with_zeros(int n, const size_t *dims, int typenum) {
  */
 static PyObject*
 MKLNdarray_get_shape(MKLNdarray *self, void *closure) {
-    if (NULL != self) {
+    if (NULL == self) {
         PyErr_SetString(PyExc_RuntimeError,
                         "MKLNdarray_get_shape: input MKLNdarray* self is NULL");
         return NULL;
@@ -989,7 +988,7 @@ MKLNdarray_get_dtype(MKLNdarray *self, void *closure) {
                         "MKLNdarray_get_dtype: input MKLNdarray* self is NULL");
         return NULL;
     }
-    
+
     if (self->nd < 0 || self->dtype < 0) {
         PyErr_SetString(PyExc_RuntimeError,
                         "MKLNdarray_get_dtype: MKLNdarray not initialized");
@@ -1037,7 +1036,7 @@ MKLNdarray_get_size(MKLNdarray *self, void *closure) {
                         "MKLNdarray_get_size: input MKLNdarray* self is NULL");
         return NULL;
     }
-    
+
     if (self->nd <= 0) {
         total_element = 0;
     } else {
@@ -1064,7 +1063,7 @@ MKLNdarray_get_base(MKLNdarray *self, void *closure) {
                         "MKLNdarray_get_base: input MKLNdarray* self is NULL");
         return NULL;
     }
-    
+
     PyObject * base = self->base;
     if (!base) {
         base = Py_None;
@@ -1152,7 +1151,7 @@ PyObject* MKLNdarray_CreateArrayObj(MKLNdarray *self) {
                 }
                 return NULL;
             }
-        
+
             status = dnnConversionExecute_F64(primitive, (void*)self->private_data, (void*)rval_data);
             if (E_SUCCESS != status) {
                 PyErr_Format(PyExc_RuntimeError,
@@ -1324,7 +1323,7 @@ size_t MKLNdarray_get_memory_size(const MKLNdarray* self, int type)
     }
 
     size_t data_size = 0;
-    dnnLayout_t* layout = NULL;
+    const dnnLayout_t* layout = NULL;
     if (type == MNDA_DATA) {
         if (self->private_layout != NULL) {
             layout = &(self->private_layout);
@@ -1399,13 +1398,13 @@ MKLNdarray* MKLNdarray_View(const MKLNdarray *self) {
  * input MKLNdarray, and copies layout and data buffer from input MKLndarray to
  * the new MKLNdarray.
  */
-MKLNdarray * MKLNdarray_Copy(const MKLNdarray *self) {
+MKLNdarray * MKLNdarray_Copy(MKLNdarray *self) {
     if (NULL == self) {
         PyErr_SetString(PyExc_RuntimeError, "MKLNdarray_Copy: input is NULL");
         return NULL;
     }
 
-    MKLNdarray *rval = MKLNdarray_New(self->nd, self->dtype);
+    MKLNdarray *rval = (MKLNdarray*)MKLNdarray_New(self->nd, self->dtype);
     if (!rval || (-1 == self->nd)) {
         PyErr_SetString(PyExc_RuntimeError,
                 "MKLNdarray_Copy: fail to new MKLNdarray");
@@ -1476,7 +1475,7 @@ PyObject * MKLNdarray_DeepCopy(MKLNdarray *self, PyObject *memo) {
         Py_XINCREF(rval);
         return rval;
     } else {
-        PyObject rval = MKLNdarray_Copy(self);
+        PyObject* rval = (PyObject*)MKLNdarray_Copy(self);
         if (NULL == rval) {
             Py_DECREF(selfkey);
             return NULL;
@@ -1669,12 +1668,12 @@ MKLNdarray_New(int nd, int typenum) {
     }
     // printf("MKLNdarray_New: %llp \n", (void*)self);
     self->base              = NULL;
-    self->basee_layout      = NULL;
     self->nd                = nd;
     self->dtype             = typenum;
     self->private_data      = NULL;
     self->private_workspace = NULL;
     self->data_size         = 0;
+    self->workspace_size    = 0;
     self->private_layout    = NULL;
     self->private_layout_ws = NULL;
     memset((void*)(self->user_structure), 0, 2 * MNDA_MAX_NDIM * sizeof (size_t));

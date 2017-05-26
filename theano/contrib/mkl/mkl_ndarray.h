@@ -22,7 +22,9 @@
 #define MNDA_FLOAT32    (11)
 #define MNDA_FLOAT64    (12)
 
-char* MNDA_TYPE[] = {"", "", "", "int16", "", "int32", "", "int64",
+// Placeholder for dtype name. Only support FP32 and FP64 currently.
+// INT8/INT16 will be added to this array in the future.
+char* MNDA_TYPE[] = {"", "", "", "", "", "", "", "",
                      "", "", "", "float32", "float64", ""};
 
 #if PY_MAJOR_VERSION >= 3
@@ -89,8 +91,8 @@ MOD_PUBLIC int MKLNdarray_TYPE(const MKLNdarray* self);
 MOD_PUBLIC int MKLNdarray_create_buffer_from_primitive(MKLNdarray *self,
                                                        const dnnPrimitive_t *prim,
                                                        dnnResourceType_t res_type);
-MOD_PUBLIC int MKLNdarray_copy_layout(MKLNdarray *self, const MKLNdarray *other);
-MOD_PUBLIC int MKLNdarray_create_buffer_from_layout(MKLNdarray *self);
+MOD_PUBLIC int MKLNdarray_copy_layout(MKLNdarray *self, MKLNdarray *other, int type);
+MOD_PUBLIC int MKLNdarray_create_buffer_from_layout(MKLNdarray *self, int type);
 MOD_PUBLIC int MKLNdarray_create_buffer_from_structure(MKLNdarray *self);
 
 #endif
