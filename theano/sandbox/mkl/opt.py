@@ -25,7 +25,9 @@ from theano.sandbox.mkl import (mkl_relu, mkl_pool, mkl_lrn,
                                 mkl_conv, mkl_elemwise, mkl_bn, mkl_concatenate)
 
 from theano.tensor.signal import pool
-from theano.tensor.basic import Join, Split
+from theano.tensor.basic import (Join, Split,
+                                 get_scalar_constant_value,
+                                 NotScalarConstantError)
 from theano.tensor.nnet.abstract_conv import (AbstractConv2d,
                                               AbstractConv2d_gradWeights,
                                               AbstractConv2d_gradInputs)
@@ -885,6 +887,18 @@ def local_concatenate_mkl(node):
 
     try:
         axis, tensors = node.inputs[0], node.inputs[1:]
+
+        if not isinstance(axis, integer_types):
+            try:
+                axis = int(get_scalar_constant_value(axis))
+            except NotScalarConstantError:
+                return
+
+        if isinstance(axis, integer_types):
+            # MKL Concatenate only supports axis=1
+            if axis != 1:
+                return
+
         tensors_internal = [U2IConcatenate()(x) for x in tensors]
         new_inputs = [axis] + tensors_internal
         concatenateOut = mkl_concatenate.Concatenate()(*new_inputs)
@@ -913,6 +927,17 @@ def local_concatenateGrad_mkl(node):
 
     try:
         gz, axis, splits, = node.inputs
+        if not isinstance(axis, integer_types):
+            try:
+                axis = int(get_scalar_constant_value(axis))
+            except NotScalarConstantError:
+                return
+
+        if isinstance(axis, integer_types):
+            # MKL Concatenate only supports axis=1
+            if axis != 1:
+                return
+
         # Retrieve the inputs to Join op
         #                         inp_0             inp_1    inp
         #                         |                 |        |
