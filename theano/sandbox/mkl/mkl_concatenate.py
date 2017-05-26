@@ -5,8 +5,6 @@ from theano.tensor.blas import ldflags
 from theano.gradient import grad_undefined
 from theano.sandbox.mkl import mkl_helper, basic_ops
 
-from six import integer_types
-
 
 class Concatenate(basic_ops.MKLOp, Join):
     __props__ = ()
