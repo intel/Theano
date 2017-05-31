@@ -50,6 +50,7 @@ class Concatenate(basic_ops.MKLOp, Join):
         void *z_internal_buffer;
         void *concat_res[dnnResourceNumber];
         npy_intp out_dim[4];
+        int axis;
         """
         return ccode
 
@@ -58,6 +59,7 @@ class Concatenate(basic_ops.MKLOp, Join):
         pConcat = NULL;
         z_internal_layout = NULL;
         z_internal_buffer = NULL;
+        axis = 0;
         """
         return ccode
 
@@ -131,16 +133,9 @@ class Concatenate(basic_ops.MKLOp, Join):
         sub.update(locals())
 
         ccode = """
-        int axis = ((%(adtype)s *)PyArray_DATA(%(axis)s))[0];
+        axis = ((%(adtype)s *)PyArray_DATA(%(axis)s))[0];
         if (axis != 1) {
             PyErr_Format(PyExc_RuntimeError, "MKL Concatenate only supports axis=1, but got %%d!", axis);
-            %(fail)s
-        }
-
-        int ndim = PyArray_NDIM(%(input_1)s);
-        if (axis < -ndim) {
-            PyErr_Format(PyExc_IndexError,
-                         "Concatenate axis %%d out of bounds [0, %%d)", axis, ndim);
             %(fail)s
         }
 
@@ -245,6 +240,7 @@ class ConcatenateGrad(basic_ops.MKLOp):
         dnnPrimitive_t pSplit;
         void **gx_internal_buffer;
         void *split_res[dnnResourceNumber];
+        int axis;
         """
         return ccode
 
@@ -252,6 +248,7 @@ class ConcatenateGrad(basic_ops.MKLOp):
         ccode = """
         pSplit = NULL;
         gx_internal_buffer = NULL;
+        axis = 0;
         """
         return ccode
 
@@ -321,7 +318,7 @@ class ConcatenateGrad(basic_ops.MKLOp):
         sub.update(locals())
 
         ccode = """
-        int axis = ((%(adtype)s *)PyArray_DATA(%(axis)s))[0];
+        axis = ((%(adtype)s *)PyArray_DATA(%(axis)s))[0];
         if (axis != 1) {
             PyErr_Format(PyExc_RuntimeError, "MKL ConcatenateGrad only supports axis=1, but got %%d!", axis);
             %(fail)s
