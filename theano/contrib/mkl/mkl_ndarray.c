@@ -142,7 +142,6 @@ MKLNdarray_uninit(MKLNdarray *self) {
  */
 static void
 MKLNdarray_dealloc(MKLNdarray *self) {
-    // printf("dealloc: %llp \n", (void*)self);
     if (Py_REFCNT(self) > 1) {
         printf("WARNING: MKLNdarray_dealloc called when there is still active reference to it.\n");
     }
@@ -596,7 +595,7 @@ int MKLNdarray_create_buffer_from_layout(MKLNdarray *self, int type) {
         buffer = self->private_data;
         data_size = &(self->data_size);
 
-    } else if (type = MNDA_WORKSPACE) {
+    } else if (MNDA_WORKSPACE == type) {
         layout = &(self->private_layout_ws);
         buffer = self->private_workspace;
         data_size = &(self->workspace_size);
@@ -709,30 +708,64 @@ int MKLNdarray_copy_layout(MKLNdarray *self, MKLNdarray *other, int type) {
     void* layout_buf = NULL;
     if (MNDA_FLOAT64 == self->dtype) {
         layout_buf = (void*)malloc(dnnLayoutSerializationBufferSize_F64());
+        if (NULL == layout_buf) {
+            PyErr_SetString(PyExc_MemoryError,
+                            "MKLNdarray_copy_layout: alloc buffer for layout failed");
+            return -1;
+        }
+
         status = dnnLayoutSerialize_F64(*src_layout, layout_buf);
         if (E_SUCCESS != status) {
             PyErr_SetString(PyExc_RuntimeError,
                             "MKLNdarray_copy_layout: serialize layout failed");
+
+            if (layout_buf) {
+                free (layout_buf);
+                layout_buf = NULL;
+            }
             return -1;
         }
+
         status = dnnLayoutDeserialize_F64(dst_layout, layout_buf);
         if (E_SUCCESS != status) {
             PyErr_SetString(PyExc_RuntimeError,
                             "MKLNdarray_copy_layout: deserialize layout failed");
+
+            if (layout_buf) {
+                free (layout_buf);
+                layout_buf = NULL;
+            }
             return -1;
         }
     } else {  // MNDA_FLOAT32
         layout_buf = (void*)malloc(dnnLayoutSerializationBufferSize_F32());
+        if (NULL == layout_buf) {
+            PyErr_SetString(PyExc_MemoryError,
+                            "MKLNdarray_copy_layout: alloc buffer for layout failed");
+            return -1;
+        }
+
         status = dnnLayoutSerialize_F32(*src_layout, layout_buf);
         if (E_SUCCESS != status) {
             PyErr_SetString(PyExc_RuntimeError,
                             "MKLNdarray_copy_layout: serialize layout failed");
+
+            if (layout_buf) {
+                free (layout_buf);
+                layout_buf = NULL;
+            }
             return -1;
         }
+
         status = dnnLayoutDeserialize_F32(dst_layout, layout_buf);
         if (E_SUCCESS != status) {
             PyErr_SetString(PyExc_RuntimeError,
                             "MKLNdarray_copy_layout: deserialize layout failed");
+
+            if (layout_buf) {
+                free (layout_buf);
+                layout_buf = NULL;
+            }
             return -1;
         }
     }
