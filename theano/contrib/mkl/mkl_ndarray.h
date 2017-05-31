@@ -23,7 +23,7 @@
 #define MNDA_FLOAT64    (12)
 
 // Placeholder for dtype name. Only support FP32 and FP64 currently.
-// INT8/INT16 will be added to this array in the future.
+// Other types will be supported in future.
 char* MNDA_TYPE[] = {"", "", "", "", "", "", "", "",
                      "", "", "", "float32", "float64", ""};
 
