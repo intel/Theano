@@ -4,6 +4,7 @@ import numpy
 import warnings
 
 from six import integer_types
+from six.moves import xrange
 
 import theano
 from theano.tensor.blas import ldflags
