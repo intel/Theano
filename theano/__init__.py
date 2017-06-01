@@ -93,7 +93,11 @@ if on_xeon_phi:
         'OMP_NUM_THREADS': str(num_cores - 2),
     }
 
-    for key, val in env_vars.iteritems():
+    if sys.version_info[0] >= 3:
+        env_vars_items = env_vars.items()
+    else:
+        env_vars_items = env_vars.iteritems()
+    for key, val in env_vars_items:
         if os.getenv(key, None) is None:
             os.environ[key] = val
             theano_logger.info("Setting environment variable '{}' to '{}' as optimal recommendation".format(key, val))
