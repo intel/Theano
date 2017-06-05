@@ -688,7 +688,8 @@ class U2IConv(BaseConvertOp):
 
     def make_node(self, x):
         x = T.as_tensor_variable(x)
-        return Apply(self, [x], [x.type()])
+        out = MKLNdarrayType(broadcastable=x.type.broadcastable, dtype=x.dtype)()
+        return Apply(self, [x], [out])
 
     def grad(self, inp, grads):
         x, = inp
@@ -778,62 +779,62 @@ class U2IConv(BaseConvertOp):
                 zStride[3] = zSize[0] * zSize[1] * zSize[2];
 
                 const int group = %(grp)s;
-                //create user layout
+
+                //create user/internal layout and decide if conversion is needed
                 CHECK_ERR( dnnLayoutCreate_%(precision)s(&layout_user, DIMENSION, imageSize, imageStride), err );
                 CHECK_ERR( dnnGroupsConvolutionCreateForward_%(precision)s(&primitive, NULL,
                            dnnAlgorithmConvolutionDirect, group, DIMENSION, imageSize, zSize,
                            weightSize, convStride, convPadding, dnnBorderZeros), err );
                 CHECK_ERR( dnnLayoutCreateFromPrimitive_%(precision)s(&layout_internal, primitive, dnnResourceSrc), err );
-            }
-
-            if (!dnnLayoutCompare_%(precision)s(layout_user, layout_internal))
-            {
-                if (NULL == to_internal)
-                {
+                
+                if (!dnnLayoutCompare_%(precision)s(layout_user, layout_internal)) {
                     CHECK_ERR( dnnConversionCreate_%(precision)s(&to_internal, layout_user, layout_internal), err );
+                } else {
+                    to_internal = NULL;
                 }
+                
+                CHECK_ERR( dnnAllocateBuffer_%(precision)s((void**)&internal_buf, layout_internal), err );
             }
 
-            if (NULL == %(z)s)
-            {
-                //Create PyArrayObject for output
-                %(z)s = (PyArrayObject*)PyArray_ZEROS(DIMENSION, PyArray_DIMS(%(x)s), PyArray_TYPE(%(x)s), 0);
+            if (!(%(z)s
+               && MKLNdarray_Check((PyObject *)%(z)s)
+               && MKLNdarray_NDIM(%(z)s) == PyArray_NDIM(%(x)s)
+               && MKLNdarray_DIMS(%(z)s)[0] == PyArray_DIMS(%(x)s)[0]
+               && MKLNdarray_DIMS(%(z)s)[1] == PyArray_DIMS(%(x)s)[1]
+               && MKLNdarray_DIMS(%(z)s)[2] == PyArray_DIMS(%(x)s)[2]
+               && MKLNdarray_DIMS(%(z)s)[3] == PyArray_DIMS(%(x)s)[3]) ) {
 
-                if (NULL == %(z)s)
-                {
-                    %(fail)s
-                }
+               //free previous data and re-allocate buf
+               if (%(z)s) Py_XDECREF(%(z)s);
+               
+               %(z)s = (MKLNdarray *)MKLNdarray_New(PyArray_NDIM(%(x)s), PyArray_TYPE(%(x)s));
+               if (NULL == %(z)s) {
+                   %(fail)s
+               }
+
+               int ndim = PyArray_NDIM(%(x)s);
+               size_t dims[MAX_NDIM] = {0};
+               for (int i = 0; i < ndim; i++) {
+                   dims[i] = (size_t)PyArray_DIMS(%(x)s)[i];
+               }
+               int status = MKLNdarray_set_structure(%(z)s, ndim, dims);
+               if (status != 0) {
+                   %(fail)s
+               }
+
+               status = MKLNdarray_create_buffer_from_primitive(%(z)s, &primitive, dnnResourceSrc);
+               if (status != 0) {
+                   %(fail)s
+               }
             }
 
-            if (NULL == internal_buf)
-            {
-                CHECK_ERR(  dnnAllocateBuffer_%(precision)s((void**)&internal_buf, layout_internal), err );
+            if (to_internal) {
+                CHECK_ERR( dnnConversionExecute_%(precision)s(to_internal, PyArray_DATA(%(x)s), MKLNdarray_DATA(%(z)s)), err );
+            } else {
+                memcpy(MKLNdarray_DATA(%(z)s), (void*)PyArray_DATA(%(x)s), %(z)s->data_size);
             }
 
-            if (to_internal)
-            {
-                convert_resources[dnnResourceFrom] = (PyArray_DATA(%(x)s));
-                convert_resources[dnnResourceTo] = (void*)(internal_buf);
-                CHECK_ERR( dnnExecute_%(precision)s(to_internal, convert_resources), err );
-            }
-            else
-            {
-                internal_buf = (PyArray_DATA(%(x)s));
-            }
-
-            if (layout_internal != ((dnnLayout_t*)PyArray_DATA(%(z)s))[0])
-            {
-                ((dnnLayout_t*)PyArray_DATA(%(z)s))[0] = layout_internal;
-            }
-            if (internal_buf != ((void**)PyArray_DATA(%(z)s))[1])
-            {
-                ((void**)PyArray_DATA(%(z)s))[1] = internal_buf;
-            }
             first_run = 0;
-
-            #ifdef _MKL_DEBUG_
-                std::cout << "U2IConv2D: from buffer: " << convert_resources[dnnResourceFrom] << " to buffer: " << convert_resources[dnnResourceTo] << std::endl;
-            #endif
         """ % locals()
         return ccode
 
