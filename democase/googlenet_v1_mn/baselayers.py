@@ -71,6 +71,8 @@ class DropoutLayer(object):
 
         DropoutLayer.layers.append(self)
 
+        #print 'dropout layer with P_drop: ' + str(self.prob_drop)
+
     @staticmethod
     def SetDropoutOn():
         for i in range(0, len(DropoutLayer.layers)):
@@ -109,6 +111,7 @@ class DataLayer(object):
         self.output = self.output[
             :, crop_xs:crop_xs + cropsize, crop_ys:crop_ys + cropsize, :]
 
+        #print "data layer with shape_in: " + str(input_shape)
 
 class Conv2DLayer(object):
 
