@@ -1,7 +1,7 @@
 import theano
 import theano.tensor as T
 import numpy as np
-from googlenet_theano_opt import googlenet, compile_train_model, compile_val_model, set_learning_rate
+from googlenet_theano import googlenet, compile_train_model, compile_val_model, set_learning_rate
 import time
 from datetime import datetime
 import sys
@@ -39,7 +39,7 @@ def time_theano_run(func, info_string):
 def googlenet_train(batch_size=256, image_size=(3, 224, 224)):
 
     input_shape = (batch_size,) + image_size
-    model = googlenet(input_shape, drop_flag=True)
+    model = googlenet(input_shape)
 
     dist = distributed.Distribution()
     print ('dist.rank: ', dist.rank, 'dist.size: ', dist.size)
@@ -65,12 +65,11 @@ def googlenet_train(batch_size=256, image_size=(3, 224, 224)):
     shared_y.set_value(labels)
     #set_learning_rate(shared_lr, iter)
 
-    if multinode_mode == False: 
-        print("Run model validation: dropout off")
-        model.set_dropout_off()
-        time_theano_run(validate_model, 'Forward')
-        
-    print("Run model training dropout on")
+#    print("Run model validation: dropout off")
+    model.set_dropout_off()
+    time_theano_run(validate_model, 'Forward')
+
+#    print("Run model training dropout on")
     model.set_dropout_on()
     time_theano_run(train_model, 'Forward-Backward')
 
