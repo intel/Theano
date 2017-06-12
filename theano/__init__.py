@@ -62,11 +62,36 @@ if not using_icpc:
     config.cxx = 'g++'
     config.gcc.cxxflags = '-fopenmp -O3 -opt-prefetch=2 -funroll-loops'
 
-on_xeon_phi = False
+lscpu_info = check_output(['lscpu']).decode('utf-8')
+lines = lscpu_info.split('\n')
 
+
+ht_is_enabled = True
+physical_core_number = 0
+thread_per_core_regex = r'^Thread\(s\) per core:\s+(\d+)'
+socket_regex = r'Socket\(s\):\s+(\d+)'
+core_per_socket_regex = r'Core\(s\) per socket:\s+(\d+)'
+
+for line in lines:
+    m = re.match(thread_per_core_regex, line)
+    if m:
+        thread_per_core = int(m.group(1))
+        if thread_per_core == 1:
+            ht_is_enabled = False
+
+    m = re.match(socket_regex, line)
+    if m:
+        num_socket = int(m.group(1))
+
+    m = re.match(core_per_socket_regex, line)
+    if m:
+        core_per_socket = int(m.group(1))
+physical_core_number = num_socket * core_per_socket
+
+
+on_xeon_phi = False
 cpuinfo = check_output(['cat', '/proc/cpuinfo']).decode('utf-8')
 lines = cpuinfo.split('\n')
-
 regex = r'^model\s+:\s+(\d+)'
 for line in lines:
     m = re.match(regex, line)
@@ -75,31 +100,28 @@ for line in lines:
         on_xeon_phi = model == 87 or model == 133
         break
 
+env_vars = {
+    'KMP_BLOCKTIME': '1',
+    'KMP_AFFINITY': 'granularity=core,noduplicates,compact,0,0',
+}
+
 if on_xeon_phi:
+    env_vars['OMP_NUM_THREADS'] = str(physical_core_number - 2)
+else:
+    env_vars['OMP_NUM_THREADS'] = str(physical_core_number)
 
-    core_ids = set()
 
-    core_id_regex = r'^core id\s+:\s+(\d+)'
-    for line in lines:
-        m = re.search(core_id_regex, line)
-        if m:
-            core_ids.add(m.group(1))
-    num_cores = len(core_ids)
-
-    # Xeon Phi recommended defaults
-    env_vars = {
-        'KMP_BLOCKTIME': '1',
-        'KMP_AFFINITY': 'verbose,granularity=core,noduplicates,compact,0,0',
-        'OMP_NUM_THREADS': str(num_cores - 2),
-    }
-
-    for key, val in env_vars.iteritems():
-        if os.getenv(key, None) is None:
-            os.environ[key] = val
-            theano_logger.info("Setting environment variable '{}' to '{}' as optimal recommendation".format(key, val))
-        else:
-            theano_logger.info("Environment variable '{}' is set to '{}'".format(key, os.getenv(key)))
-            theano_logger.info("Recommended value is '{}'".format(val))
+if sys.version_info[0] >= 3:
+    env_vars_items = env_vars.items()
+else:
+    env_vars_items = env_vars.iteritems()
+for key, val in env_vars_items:
+    if os.getenv(key, None) is None:
+        os.environ[key] = val
+        theano_logger.info("Setting environment variable '{}' to '{}' as optimal recommendation".format(key, val))
+    else:
+        theano_logger.info("Environment variable '{}' is set to '{}'".format(key, os.getenv(key)))
+        theano_logger.info("Recommended value is '{}'".format(val))
 
 # This is the api version for ops that generate C code.  External ops
 # might need manual changes if this number goes up.  An undefined
