@@ -5,10 +5,11 @@ This repo is dedicated to improving Theano performance on CPU, especially in Int
 
 **Key Features**
   * New backend of Intel® MKL (version >= 2017.0 which includes neural network primitives)
-  * Further graph optimizations
+  * Advanced graph optimizations
   * CPU friendly OPs
   * Switch to Intel® MKL backend automatically in Intel®  Architecture
-  * Out-of-box performance improvements and good portability
+  * Out-of-box performance improvements for legacy models  
+  * Transparently supports for Keras (Lasagne, etc.) workloads 
 
 **Benchmark**
   * Hardwares
@@ -16,8 +17,8 @@ This repo is dedicated to improving Theano performance on CPU, especially in Int
     - Intel® Xeon Phi™  CPU 7250F @ 1.40GHz, 98G RAM
   * Softwares
     - Script: **[convnet-benchmarks](https://github.com/soumith/convnet-benchmarks/blob/master/theano/benchmark_imagenet.py)**
-    - **[Stock Theano](https://github.com/theano/theano)**, commit ID: 2fa3cec
-    - **[Intel Theano](https://github.com/intel/theano)**, commit ID: 00216ef, ver-1.1
+    - **[Stock Theano](https://github.com/theano/theano)**, commit ID: 2fa3ce
+    - **[Intel Theano](https://github.com/intel/theano)**, commit ID: e3f7b4, ver-1.1
   * Terminologies
     - FWD, forward for inference
     - FWD+BWD, forward and backward for training
