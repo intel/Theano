@@ -11,7 +11,7 @@ warnings.filterwarnings("ignore")
 rng = np.random.RandomState(23455)    
 class SoftmaxLayer(object):
 
-    def __init__(self,name,x):
+    def __init__(self,x):
         self.classifier=x
         self.output = T.nnet.softmax(self.classifier)
         self.p_y_given_x = self.output
@@ -71,6 +71,8 @@ class DropoutLayer(object):
 
         DropoutLayer.layers.append(self)
 
+        #print 'dropout layer with P_drop: ' + str(self.prob_drop)
+
     @staticmethod
     def SetDropoutOn():
         for i in range(0, len(DropoutLayer.layers)):
@@ -109,10 +111,11 @@ class DataLayer(object):
         self.output = self.output[
             :, crop_xs:crop_xs + cropsize, crop_ys:crop_ys + cropsize, :]
 
+        #print "data layer with shape_in: " + str(input_shape)
 
 class Conv2DLayer(object):
 
-    def __init__(self,name, input, input_shape, filter_shape, convstride=1, padsize=0, flip_filters=False):
+    def __init__(self, input, input_shape, filter_shape, convstride=1, padsize=0, flip_filters=False):
         assert input_shape[1] == filter_shape[1]
         self.filter_size = (filter_shape[-1],) * 2
         self.input_shape = input_shape
@@ -167,7 +170,7 @@ class Conv2DLayer(object):
                        self.convstride, self.pad)))
 
 class ReluLayer(object):
-    def __init__(self, name, input, input_shape):
+    def __init__(self, input, input_shape):
         self.input_shape = input_shape
         self.output = relu(input)
 
@@ -176,7 +179,7 @@ class ReluLayer(object):
         
 class MaxPool2DLayer(object):
     
-    def __init__(self,name, input, input_shape, pool_size=2, stride=None, pad=0, ignore_border=True):
+    def __init__(self, input, input_shape, pool_size=2, stride=None, pad=0, ignore_border=True):
         if stride is None:
             self.stride = pool_size
         else:
@@ -237,7 +240,7 @@ class MaxPool2DLayer(object):
         
 class AveragePool2DLayer(object):
     
-    def __init__(self,name, input, input_shape, pool_size=2, stride=None, pad=0, ignore_border=True):
+    def __init__(self, input, input_shape, pool_size=2, stride=None, pad=0, ignore_border=True):
         if stride is None:
             self.stride = pool_size
         else:
@@ -312,7 +315,7 @@ class LocalResponseNormalization2DLayer(object):
         return self.input_shape
     
 class ConcatLayer(object):
-    def __init__(self,name, inputs, input_shapes, axis=1,layer_count=0):
+    def __init__(self, inputs, input_shapes, axis=1,layer_count=0):
         self.input_shapes = input_shapes
         self.axis = axis
         self.lc = layer_count
@@ -371,4 +374,5 @@ class DenseLayer(object):
 
     def get_output_shape_for(self):
         return (self.input_shape[0], self.num_units)
+
 
