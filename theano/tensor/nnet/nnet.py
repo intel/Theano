@@ -2222,10 +2222,16 @@ def relu(x, alpha=0):
     # the graph.
     # Otherwise, Use the default relu function as it was.
 
-    if theano.sandbox.mkl.mkl_available() and \
-       isinstance(x, theano.Variable) and x.type.ndim == 4:
-        from theano.sandbox.mkl.mkl_relu import AbstractRelu
-        return AbstractRelu(slope=alpha)(x)
+    try:
+        import theano.sandbox.mkl as mkl
+    except ImportError:
+        mkl = None
+
+    if mkl is not None:
+        if mkl.mkl_available() and \
+           isinstance(x, theano.Variable) and x.type.ndim == 4:
+            from theano.sandbox.mkl.mkl_relu import AbstractRelu
+            return AbstractRelu(slope=alpha)(x)
 
     # This is probably the fastest implementation for GPUs. Both the forward
     # pass and the gradient get compiled into a single GpuElemwise call.
