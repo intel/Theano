@@ -92,6 +92,24 @@ class Relu(basic_ops.MKLOp):
         """
         return ccode
 
+    def c_cleanup_code_struct(self, node, name):
+        dtype = str(node.__dict__['inputs'][0].dtype)
+        assert dtype in ('float32', 'float64')
+
+        if 'float32' == dtype:
+            precision = 'F32'
+        else:
+            precision = 'F64'
+
+        ccode = """
+            // release primitive
+            if (NULL != relu_fwd) {
+                dnnDelete_%(precision)s(relu_fwd);
+                relu_fwd = NULL;
+            }
+        """ % locals()
+        return ccode
+
     def c_code(self, node, name, inp, out, sub):
         x, = inp
         z, = out
@@ -112,6 +130,7 @@ class Relu(basic_ops.MKLOp):
             assert (MKLNdarray_Check((PyObject *)%(x)s));
             int typenum = MKLNdarray_TYPE((MKLNdarray*)%(x)s);
             int ndim = MKLNdarray_NDIM(%(x)s);
+            int ret = 0;
 
             if (NULL == relu_fwd) {
                 CHECK_ERR( dnnReLUCreateForward_%(precision)s(&relu_fwd,
@@ -134,13 +153,13 @@ class Relu(basic_ops.MKLOp):
                     %(fail)s
                 }
 
-                int status = MKLNdarray_set_structure(%(z)s, ndim, MKLNdarray_DIMS(%(x)s));
-                if (status != 0) {
+                ret = MKLNdarray_set_structure(%(z)s, ndim, MKLNdarray_DIMS(%(x)s));
+                if (ret != 0) {
                     %(fail)s;
                 }
 
-                status = MKLNdarray_create_buffer_from_primitive(%(z)s, &relu_fwd, dnnResourceDst);
-                if (status != 0) {
+                ret = MKLNdarray_create_buffer_from_primitive(%(z)s, &relu_fwd, dnnResourceDst);
+                if (ret != 0) {
                     %(fail)s;
                 }
             }
@@ -203,6 +222,24 @@ class ReluGrad(basic_ops.MKLOp):
 
         return Apply(self, [x, gz], [x.type()])
 
+    def c_cleanup_code_struct(self, node, name):
+        dtype = str(node.__dict__['inputs'][0].dtype)
+        assert dtype in ('float32', 'float64')
+
+        if 'float32' == dtype:
+            precision = 'F32'
+        else:
+            precision = 'F64'
+
+        ccode = """
+            // release primitive
+            if (NULL != relu_bwd) {
+                dnnDelete_%(precision)s(relu_bwd);
+                relu_bwd = NULL;
+            }
+        """ % locals()
+        return ccode
+
     def c_code(self, node, name, inp, out, sub):
         x, gz, = inp
         gx, = out
@@ -224,6 +261,7 @@ class ReluGrad(basic_ops.MKLOp):
             assert (MKLNdarray_Check((PyObject *)%(gz)s));
             int typenum = MKLNdarray_TYPE((MKLNdarray*)%(x)s);
             int ndim = MKLNdarray_NDIM(%(x)s);
+            int ret = 0;
 
             if (NULL == relu_bwd) {
                 CHECK_ERR( dnnReLUCreateBackward_%(precision)s(&relu_bwd,
@@ -247,12 +285,12 @@ class ReluGrad(basic_ops.MKLOp):
                     %(fail)s
                 }
 
-                int status = MKLNdarray_set_structure(%(gx)s, ndim, MKLNdarray_DIMS(%(x)s));
-                if (status != 0) {
+                ret = MKLNdarray_set_structure(%(gx)s, ndim, MKLNdarray_DIMS(%(x)s));
+                if (ret != 0) {
                     %(fail)s;
                 }
 
-                status = MKLNdarray_create_buffer_from_primitive(%(gx)s, &relu_bwd, dnnResourceDiffSrc);
+                ret = MKLNdarray_create_buffer_from_primitive(%(gx)s, &relu_bwd, dnnResourceDiffSrc);
                 if (status != 0) {
                     %(fail)s;
                 }
