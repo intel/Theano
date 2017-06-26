@@ -291,7 +291,7 @@ class ReluGrad(basic_ops.MKLOp):
                 }
 
                 ret = MKLNdarray_create_buffer_from_primitive(%(gx)s, &relu_bwd, dnnResourceDiffSrc);
-                if (status != 0) {
+                if (ret != 0) {
                     %(fail)s;
                 }
             }
