@@ -7,11 +7,10 @@ from six import integer_types
 from six.moves import xrange
 
 import theano
-from theano.tensor.blas import ldflags
 from theano import tensor, Apply, Variable
 from theano.gradient import DisconnectedType
 from theano.sandbox.mkl.basic_ops import MKLOp
-from theano.sandbox.mkl.mkl_helper import header_text
+from theano.sandbox.mkl.mkl_type import MKLNdarrayType
 
 
 class PoolBase(MKLOp):
@@ -181,40 +180,8 @@ class PoolBase(MKLOp):
         rval = list(imgshape[:-ndim]) + out_shape
         return rval
 
-    def c_libraries(self):
-        return ldflags()
-
-    def c_compile_args(self):
-        compile_args = ldflags(libs=False, flags=True)
-        compile_args += super(PoolBase, self).c_compile_args()
-        return compile_args
-
-    def c_lib_dirs(self):
-        return ldflags(libs=False, libs_dir=True)
-
-    def c_header_dirs(self):
-        return ldflags(libs=False, include_dir=True)
-
     def c_headers(self):
-        headers = ['<stdio.h>', '<fstream>']
-        headers += super(PoolBase, self).c_headers()
-        return headers
-
-    def c_support_code(self):
-        ccode = header_text()
-        ccode += """
-        #define DIMENSION (4)
-        #define CHECK_ERR(f, err) \\
-            do { \\
-                (err) = (f); \\
-                if ((err) != E_SUCCESS) { \\
-                    printf("Error in file [%s:%d], err code (%d)", \\
-                           __FILE__, __LINE__, err); \\
-                    exit(1); \\
-                } \\
-            } while(0)
-        """
-        return ccode
+        return super(PoolBase, self).c_headers()
 
     def c_support_code_struct(self, node, name):
         dtype = str(node.__dict__['inputs'][0].dtype)
@@ -231,44 +198,31 @@ class PoolBase(MKLOp):
 
         ccode = """
         int first_run;
-        size_t inputSize[DIMENSION] = {0};
-        size_t inputStrides[DIMENSION] = {0};
-        size_t outputSize[DIMENSION] = {0};
-        size_t outputStrides[DIMENSION] = {0};
-        size_t kernelSize[2] = {0};
-        size_t kernelStride[2] = {0};
-        int inputOffset[2] = {0};
+        size_t inputSize[DIMENSION];
+        size_t inputStrides[DIMENSION];
+        size_t outputSize[DIMENSION];
+        size_t outputStrides[DIMENSION];
+        size_t kernelSize[2];
+        size_t kernelStride[2];
+        int inputOffset[4];
 
-        void *x_internal_buffer = NULL;
-        void *x_internal_buffer_get_from_previous_op = NULL;
-        void *x_internal_buffer_to_previous = NULL;
-        void *z_internal_buffer = NULL;
-        void *gz_internal_buffer_get_from_previous_op = NULL;
-        void *gz_internal_buffer = NULL;
-        void *workspace_buffer = NULL;
+        void *x_internal_buffer;
+        void *z_internal_buffer;
+        void *gz_internal_buffer;
 
         dnnError_t err;
-        dnnPrimitive_t pPoolingFwd = NULL;
-        dnnPrimitive_t pPoolingBwd = NULL;
-        void *pool_res[dnnResourceNumber] = {0};
-        int input_buffer_size = 0;
+        dnnPrimitive_t pool_fwd;
+        dnnPrimitive_t pool_bwd;
+        void *pool_res[dnnResourceNumber];
 
         size_t input_bytes;
         size_t output_bytes;
-        size_t workspace_bytes;
 
-        dnnLayout_t x_internal_layout = NULL;
-        dnnLayout_t *x_internal_layout_ptr = NULL;
-        dnnLayout_t x_internal_layout_get_from_previous_op = NULL;
-        dnnLayout_t z_internal_layout = NULL;
-        dnnLayout_t gz_internal_layout_get_from_previous_op = NULL;
-        dnnLayout_t gz_internal_layout = NULL;
-        dnnLayout_t workspace_internal_layout = NULL;
-        dnnPrimitive_t convert_gz_to_internal = NULL;
-        dnnPrimitive_t convert_x_to_internal = NULL;
-
-        void *workspace_ptr_ptr[2];
-        void *workspace_ptr = NULL;
+        dnnLayout_t x_internal_layout;
+        dnnLayout_t z_internal_layout;
+        dnnLayout_t gz_internal_layout;
+        dnnPrimitive_t convert_gz_to_internal;
+        dnnPrimitive_t convert_x_to_internal;
         """ % sub
         return ccode
 
@@ -289,7 +243,6 @@ class PoolBase(MKLOp):
         dnnDelete_%(precision)s(convert_gz_to_internal);
         dnnLayoutDelete_%(precision)s(x_internal_layout);
         dnnLayoutDelete_%(precision)s(z_internal_layout);
-        dnnLayoutDelete_%(precision)s(workspace_internal_layout);
         """ % locals()
         return ccode
     '''
@@ -361,9 +314,13 @@ class Pool(PoolBase):
     '''
 
     def make_node(self, x, ws, stride=None, pad=None):
-        x = tensor.as_tensor_variable(x)
+        if not isinstance(x.type, MKLNdarrayType):
+            raise TypeError('Expected MKLNdarrayType for x, '
+                            'but got type %s.' % str(x.type))
+
         if x.type.ndim != 4:
-            raise NotImplementedError("MKL Pool only supports 4D tensor!")
+            raise TypeError('Expected a 4 dims varialbe for x, '
+                            'but got %d dims.' % x.type.ndim)
 
         nd = self.ndim
         if stride is None:
@@ -391,7 +348,8 @@ class Pool(PoolBase):
             raise TypeError('Padding parameters must be ints.')
         # If the input shape are broadcastable we can have 0 in the output shape
         broad = x.broadcastable[:-nd] + (False,) * nd
-        out = tensor.TensorType(x.dtype, broad)
+        out = MKLNdarrayType(x.dtype, broad)
+
         return Apply(self, [x, ws, stride, pad], [out()])
 
     def infer_shape(self, node, in_shapes):
@@ -448,7 +406,10 @@ class Pool(PoolBase):
             std::cout<<"pool start"<<std::endl;
         #endif
 
-        ((void **)PyArray_DATA(%(x)s))[2] = (void*)workspace_ptr_ptr;
+        int ret = 0;
+        int ndim = MKLNdarray_NDIM(%(x)s);
+        size_t user_dims[DIMENSION] = {0};
+        int typenum = MKLNdarray_TYPE((MKLNdarray*)%(x)s);
 
         if (1 == first_run) {
             size_t kernel_h = *((npy_intp*)PyArray_GETPTR1(%(ws)s, 0));
@@ -462,13 +423,20 @@ class Pool(PoolBase):
             kernelSize[1] = kernel_h;
             kernelStride[0] = stride_w;
             kernelStride[1] = stride_h;
-            inputOffset[0] = -pad_w;
-            inputOffset[1] = -pad_h;
+            if (%(ignore_border)s) {
+                inputOffset[0] = -pad_w;
+                inputOffset[1] = -pad_h;
+                inputOffset[2] = -pad_w;
+                inputOffset[3] = -pad_h;
+            } else {
+                inputOffset[0] = -pad_w;
+                inputOffset[1] = -pad_h;
+            }
 
             int out_h, out_w; // shape of the output
             int in_h, in_w; // shape of the padded_input
-            in_h = PyArray_DIMS(%(x)s)[2];
-            in_w = PyArray_DIMS(%(x)s)[3];
+            in_h = MKLNdarray_DIMS(%(x)s)[2];
+            in_w = MKLNdarray_DIMS(%(x)s)[3];
 
             if (%(ignore_border)s) {
                 out_h = floor((float)(in_h + 2 * pad_h - kernel_h)/stride_h) + 1;
@@ -488,10 +456,10 @@ class Pool(PoolBase):
                 assert((out_w - 1) * stride_w < in_w + pad_w);
             }
 
-            inputSize[0] = PyArray_DIMS(%(x)s)[3];  //w
-            inputSize[1] = PyArray_DIMS(%(x)s)[2];  //h
-            inputSize[2] = PyArray_DIMS(%(x)s)[1];  //c
-            inputSize[3] = PyArray_DIMS(%(x)s)[0];  //n
+            inputSize[0] = MKLNdarray_DIMS(%(x)s)[3];  //w
+            inputSize[1] = MKLNdarray_DIMS(%(x)s)[2];  //h
+            inputSize[2] = MKLNdarray_DIMS(%(x)s)[1];  //c
+            inputSize[3] = MKLNdarray_DIMS(%(x)s)[0];  //n
             inputStrides[0] = 1;
             inputStrides[1] = inputSize[0];
             inputStrides[2] = inputSize[0] * inputSize[1];
@@ -505,118 +473,100 @@ class Pool(PoolBase):
             outputStrides[1] = outputSize[0];
             outputStrides[2] = outputSize[0] * outputSize[1];
             outputStrides[3] = outputSize[0] * outputSize[1] * outputSize[2];
-        }
-        #ifdef _MKL_DEBUG_
-            std::cout << "inputSize: " << inputSize[3] << "x" << inputSize[2] << "x" << inputSize[1] << "x" << inputSize[0] << std::endl;
-            std::cout << "outputSize: " << outputSize[3] << "x" << outputSize[2] << "x" << outputSize[1] << "x" << outputSize[0] << std::endl;
-            std::cout << "pooling region: " << kernelSize[0] << "x" << kernelSize[1] << std::endl;
-            std::cout << "pooling stride: " << kernelStride[0] << "x" << kernelStride[1] << std::endl;
-            std::cout << "padding: " << inputOffset[0] << "x" << inputOffset[1] << std::endl;
-            std::cout << "ignore_border: " << %(ignore_border)s << std::endl;
-        #endif
 
-        x_internal_layout_get_from_previous_op = ((dnnLayout_t*)PyArray_DATA(%(x)s))[0];
-        x_internal_buffer_get_from_previous_op = ((void **)PyArray_DATA(%(x)s))[1];
-
-        if (NULL == pPoolingFwd) {
-            CHECK_ERR( dnnPoolingCreateForward_%(precision)s(&pPoolingFwd, NULL,
-                       %(algo)s, x_internal_layout_get_from_previous_op, kernelSize,
+            CHECK_ERR( dnnPoolingCreateForward_%(precision)s(&pool_fwd, NULL,
+                       %(algo)s, MKLNdarray_LAYOUT(%(x)s), kernelSize,
                        kernelStride, inputOffset, %(borderType)s), err );
-        }
 
-        if (NULL == x_internal_layout) {
             CHECK_ERR( dnnLayoutCreateFromPrimitive_%(precision)s(
-                       &x_internal_layout, pPoolingFwd, dnnResourceSrc), err );
-        }
-        if (NULL == z_internal_layout) {
+                       &x_internal_layout, pool_fwd, dnnResourceSrc), err );
+
             CHECK_ERR( dnnLayoutCreateFromPrimitive_%(precision)s(
-                       &z_internal_layout, pPoolingFwd, dnnResourceDst), err );
-        }
-        if (NULL == workspace_internal_layout) {
-            CHECK_ERR( dnnLayoutCreateFromPrimitive_%(precision)s(
-                       &workspace_internal_layout, pPoolingFwd, dnnResourceWorkspace), err );
-        }
+                       &z_internal_layout, pool_fwd, dnnResourceDst), err );
 
-        if (NULL == z_internal_buffer) {
-            CHECK_ERR( dnnAllocateBuffer_%(precision)s((void**)&z_internal_buffer, z_internal_layout) , err );
-        }
-        if (NULL == workspace_buffer) {
-            CHECK_ERR( dnnAllocateBuffer_%(precision)s((void**)&workspace_buffer, workspace_internal_layout) , err );
-        }
-
-        pool_res[dnnResourceWorkspace] = workspace_buffer;
-        ((dnnLayout_t**)workspace_ptr_ptr)[0] = &workspace_internal_layout;
-        ((void**)workspace_ptr_ptr)[1] = workspace_buffer;
-
-        npy_intp out_dim[4];
-        out_dim[0] = outputSize[3];
-        out_dim[1] = outputSize[2];
-        out_dim[2] = outputSize[1];
-        out_dim[3] = outputSize[0];
-        // Prepare output array
-        if ( !(%(z)s
-            && PyArray_NDIM(%(z)s)==4
-            && PyArray_DIMS(%(z)s)[0]==out_dim[0]
-            && PyArray_DIMS(%(z)s)[1]==out_dim[1]
-            && PyArray_DIMS(%(z)s)[2]==out_dim[2]
-            && PyArray_DIMS(%(z)s)[3]==out_dim[3])) {
-
-            if (%(z)s) Py_XDECREF(%(z)s);
-
-            %(z)s = (PyArrayObject*)PyArray_ZEROS(DIMENSION,
-                                                  out_dim,
-                                                  PyArray_TYPE(%(x)s),
-                                                  0);
-            if (NULL == %(z)s) {
-                PyErr_Format(PyExc_RuntimeError,
-                            "Pool: Failed to allocate output of %%lld x %%lld x %%lld x %%lld",
-                            (long long)out_dim[0], (long long)out_dim[1], (long long)out_dim[2], (long long)out_dim[3]);
-                %(fail)s
+            if (NULL == MKLNdarray_WORKSPACE(%(x)s)) {
+                ret = MKLNdarray_create_buffer_from_primitive(%(x)s, &pool_fwd, dnnResourceWorkspace);
+                if (0 != ret) {
+                    std::cout<< "MKLNdarray_create_buffer_from_primitive failed, return: "<< ret <<", line: "<<__LINE__<<std::endl;
+                    %(fail)s
+                }
             }
         }
 
-        if (!dnnLayoutCompare_%(precision)s(x_internal_layout_get_from_previous_op, x_internal_layout)) {
-            #ifdef _MKL_DEBUG_
-                std::cout<<"pool forward, x layout from previous op is not equal to internal layout" <<std::endl;
-            #endif
-            if (NULL == convert_x_to_internal) {
-                CHECK_ERR( dnnConversionCreate_%(precision)s(&convert_x_to_internal, x_internal_layout_get_from_previous_op, x_internal_layout), err );
+        #ifdef _MKL_DEBUG_
+            std::cout << "inputSize     : " << inputSize[3] << " x " << inputSize[2] << " x " << inputSize[1] << " x " << inputSize[0] << std::endl;
+            std::cout << "outputSize    : " << outputSize[3] << " x " << outputSize[2] << " x " << outputSize[1] << " x " << outputSize[0] << std::endl;
+            std::cout << "pooling region: " << kernelSize[1] << " x " << kernelSize[0] << std::endl;
+            std::cout << "pooling stride: " << kernelStride[1] << " x " << kernelStride[0] << std::endl;
+            std::cout << "padding       : " << inputOffset[3] << " x " << inputOffset[2] << " x " << inputOffset[1] << " x " << inputOffset[0] << std::endl;
+            std::cout << "ignore_border : " << %(ignore_border)s << std::endl;
+        #endif
+
+        user_dims[0] = outputSize[3];
+        user_dims[1] = outputSize[2];
+        user_dims[2] = outputSize[1];
+        user_dims[3] = outputSize[0];
+        if ( !(%(z)s
+               && MKLNdarray_Check((PyObject *)%(z)s)
+               && MKLNdarray_NDIM(%(z)s) == ndim
+               && MKLNdarray_DIMS(%(z)s)[0] == outputSize[0]
+               && MKLNdarray_DIMS(%(z)s)[1] == outputSize[1]
+               && MKLNdarray_DIMS(%(z)s)[2] == outputSize[2]
+               && MKLNdarray_DIMS(%(z)s)[3] == outputSize[3] )) {
+            if (%(z)s) Py_XDECREF(%(z)s);
+
+            %(z)s = (MKLNdarray *)MKLNdarray_New(ndim, typenum);
+            if (NULL == %(z)s) {
+                %(fail)s
+            }
+
+            ret = MKLNdarray_set_structure(%(z)s, ndim, user_dims);
+            if (ret != 0) {
+                %(fail)s;
+            }
+
+            ret = MKLNdarray_create_buffer_from_primitive(%(z)s, &pool_fwd, dnnResourceDst);
+            if (ret != 0) {
+                %(fail)s;
+            }
+        }
+
+        if (1 == first_run) {
+            if (! dnnLayoutCompare_%(precision)s(MKLNdarray_LAYOUT(%(x)s), x_internal_layout)) {
+                if (NULL == convert_x_to_internal) {
+                    CHECK_ERR( dnnConversionCreate_%(precision)s(&convert_x_to_internal, MKLNdarray_LAYOUT(%(x)s), x_internal_layout), err );
+                }
             }
         }
         if (convert_x_to_internal) {
             if (NULL == x_internal_buffer) {
                 CHECK_ERR( dnnAllocateBuffer_%(precision)s((void**)&x_internal_buffer, x_internal_layout), err );
             }
-            CHECK_ERR( dnnConversionExecute_%(precision)s(convert_x_to_internal, x_internal_buffer_get_from_previous_op, x_internal_buffer), err );
-            x_internal_layout_ptr = &x_internal_layout;
+            CHECK_ERR( dnnConversionExecute_%(precision)s(convert_x_to_internal, MKLNdarray_DATA(%(x)s), x_internal_buffer), err );
         } else {
-            x_internal_buffer = x_internal_buffer_get_from_previous_op;
-            x_internal_layout_ptr = &x_internal_layout_get_from_previous_op;
+            x_internal_buffer = MKLNdarray_DATA(%(x)s);
         }
 
         pool_res[dnnResourceSrc] = x_internal_buffer;
-        pool_res[dnnResourceDst] = z_internal_buffer;
+        pool_res[dnnResourceWorkspace] = MKLNdarray_WORKSPACE(%(x)s);
+        pool_res[dnnResourceDst] = MKLNdarray_DATA(%(z)s);
 
         #ifdef _MKL_DEBUG_
-            input_bytes = dnnLayoutGetMemorySize_%(precision)s(*x_internal_layout_ptr);
-            output_bytes = dnnLayoutGetMemorySize_%(precision)s(z_internal_layout);
-            workspace_bytes = dnnLayoutGetMemorySize_%(precision)s(workspace_internal_layout);
+            input_bytes = dnnLayoutGetMemorySize_%(precision)s(MKLNdarray_LAYOUT(%(x)s));
+            output_bytes = dnnLayoutGetMemorySize_%(precision)s(MKLNdarray_LAYOUT(%(z)s));
             std::cout << " input_bytes = " << input_bytes << std::endl;
             std::cout << " output_bytes = " << output_bytes << std::endl;
-            std::cout << " workspace_bytes =  " << workspace_bytes << std::endl;
             std::cout << "pool_res[dnnResourceSrc] = @" << pool_res[dnnResourceSrc] << std::endl;
             std::cout << "pool_res[dnnResourceDst] = @" << pool_res[dnnResourceDst] << std::endl;
             std::cout << "pool_res[dnnResourceWorkspace] = @" << pool_res[dnnResourceWorkspace] << std::endl;
         #endif
 
-        CHECK_ERR( dnnExecute_%(precision)s(pPoolingFwd, (void**)pool_res), err );
-
-        ((dnnLayout_t*)PyArray_DATA(%(z)s))[0] = z_internal_layout;
-        ((void**)PyArray_DATA(%(z)s))[1] = z_internal_buffer;
+        CHECK_ERR( dnnExecute_%(precision)s(pool_fwd, (void**)pool_res), err );
 
         first_run = 0;
         #ifdef _MKL_DEBUG_
             std::cout<<"pool forward, z_internal_buffer: @"<<z_internal_buffer<<", output layout: @"<<z_internal_layout<<std::endl;
+            std::cout<<"z.shape: "<<MKLNdarray_DIMS(%(z)s)[3]<<" x "<<MKLNdarray_DIMS(%(z)s)[2]<<" x "<<MKLNdarray_DIMS(%(z)s)[1]<<" x "<<MKLNdarray_DIMS(%(z)s)[0]<<std::endl;
             std::cout<<"pool end\\n"<<std::endl;
         #endif
         """ % sub
@@ -666,11 +616,21 @@ class PoolGrad(PoolBase):
         return [in_shapes[0]]
 
     def make_node(self, x, gz, ws, stride=None, pad=None):
-        x = tensor.as_tensor_variable(x)
-        gz = tensor.as_tensor_variable(gz)
+        if not isinstance(x.type, MKLNdarrayType):
+            raise TypeError('Expected MKLNdarrayType for x, '
+                            'but got type %s.' % str(x.type))
 
-        if x.type.ndim != 4 or gz.type.ndim != 4:
-            raise NotImplementedError("MKL Pool only supports 4D tensor!")
+        if not isinstance(gz.type, MKLNdarrayType):
+            raise TypeError('Expected MKLNdarrayType for gz, '
+                            'but got type %s.' % str(gz.type))
+
+        if x.type.ndim != 4:
+            raise TypeError('Expected a 4 dims varialbe for x, '
+                            'but got %d dims.' % x.type.ndim)
+
+        if gz.type.ndim != 4:
+            raise TypeError('Expected a 4 dims varialbe for gz, '
+                            'but got %d dims.' % gz.type.ndim)
 
         nd = self.ndim
         if stride is None:
@@ -680,12 +640,9 @@ class PoolGrad(PoolBase):
         ws = tensor.as_tensor_variable(ws)
         stride = tensor.as_tensor_variable(stride)
         pad = tensor.as_tensor_variable(pad)
-        assert isinstance(x, Variable) and x.ndim >= nd
-        assert isinstance(gz, Variable) and gz.ndim >= nd
         assert isinstance(ws, Variable) and ws.ndim == 1
         assert isinstance(stride, Variable) and stride.ndim == 1
         assert isinstance(pad, Variable) and pad.ndim == 1
-        assert x.ndim == gz.ndim >= nd
         if ws.dtype not in tensor.int_dtypes:
             raise TypeError('Pool downsample parameters must be ints.')
         if stride.dtype not in tensor.int_dtypes:
@@ -732,8 +689,10 @@ class PoolGrad(PoolBase):
         #ifdef _MKL_DEBUG_
             std::cout<<"poolgrad start"<<std::endl;
         #endif
+        int ret = 0;
+        int ndim = MKLNdarray_NDIM(%(x)s);
+        int typenum = MKLNdarray_TYPE((MKLNdarray*)%(x)s);
 
-        workspace_ptr = ((void**)PyArray_DATA(%(x)s))[2];
         if (1 == first_run) {
             size_t kernel_h = *((npy_intp*)PyArray_GETPTR1(%(ws)s, 0));
             size_t kernel_w = *((npy_intp*)PyArray_GETPTR1(%(ws)s, 1));
@@ -746,109 +705,98 @@ class PoolGrad(PoolBase):
             kernelSize[1] = kernel_h;
             kernelStride[0] = stride_w;
             kernelStride[1] = stride_h;
-            inputOffset[0] = -pad_w;
-            inputOffset[1] = -pad_h;
+            if (%(ignore_border)s) {
+                inputOffset[0] = -pad_w;
+                inputOffset[1] = -pad_h;
+                inputOffset[2] = -pad_w;
+                inputOffset[3] = -pad_h;
+            } else {
+                inputOffset[0] = -pad_w;
+                inputOffset[1] = -pad_h;
+            }
 
-            inputSize[0] = PyArray_DIMS(%(x)s)[3];  //w
-            inputSize[1] = PyArray_DIMS(%(x)s)[2];  //h
-            inputSize[2] = PyArray_DIMS(%(x)s)[1];  //c
-            inputSize[3] = PyArray_DIMS(%(x)s)[0];  //n
+            inputSize[0] = MKLNdarray_DIMS(%(x)s)[3];  //w
+            inputSize[1] = MKLNdarray_DIMS(%(x)s)[2];  //h
+            inputSize[2] = MKLNdarray_DIMS(%(x)s)[1];  //c
+            inputSize[3] = MKLNdarray_DIMS(%(x)s)[0];  //n
             inputStrides[0] = 1;
             inputStrides[1] = inputSize[0];
             inputStrides[2] = inputSize[0] * inputSize[1];
             inputStrides[3] = inputSize[0] * inputSize[1] * inputSize[2];
 
-            outputSize[0] = PyArray_DIMS(%(gz)s)[3];
-            outputSize[1] = PyArray_DIMS(%(gz)s)[2];
-            outputSize[2] = PyArray_DIMS(%(gz)s)[1];
-            outputSize[3] = PyArray_DIMS(%(gz)s)[0];
+            outputSize[0] = MKLNdarray_DIMS(%(gz)s)[3];  //w
+            outputSize[1] = MKLNdarray_DIMS(%(gz)s)[2];  //h
+            outputSize[2] = MKLNdarray_DIMS(%(gz)s)[1];  //c
+            outputSize[3] = MKLNdarray_DIMS(%(gz)s)[0];  //n
             outputStrides[0] = 1;
             outputStrides[1] = outputSize[0];
             outputStrides[2] = outputSize[0] * outputSize[1];
             outputStrides[3] = outputSize[0] * outputSize[1] * outputSize[2];
+
+            CHECK_ERR( dnnPoolingCreateBackward_%(precision)s(&pool_bwd, NULL,
+                       %(algo)s, MKLNdarray_LAYOUT(%(x)s), kernelSize,
+                       kernelStride, inputOffset, %(borderType)s), err );
+
+            CHECK_ERR( dnnPoolingCreateForward_%(precision)s(&pool_fwd, NULL,
+                       %(algo)s, MKLNdarray_LAYOUT(%(x)s), kernelSize,
+                       kernelStride, inputOffset, %(borderType)s), err );
+
+            CHECK_ERR( dnnLayoutCreateFromPrimitive_%(precision)s(
+                       &x_internal_layout, pool_fwd, dnnResourceSrc), err );
+
+            CHECK_ERR( dnnAllocateBuffer_%(precision)s((void**)&x_internal_buffer, x_internal_layout) , err );
+
+            CHECK_ERR( dnnLayoutCreateFromPrimitive_%(precision)s(
+                       &gz_internal_layout, pool_fwd, dnnResourceDst), err );
         }
+
         #ifdef _MKL_DEBUG_
-            std::cout << "inputSize: " << inputSize[3] << "x" << inputSize[2] << "x" << inputSize[1] << "x" << inputSize[0] << std::endl;
-            std::cout << "outputSize: " << outputSize[3] << "x" << outputSize[2] << "x" << outputSize[1] << "x" << outputSize[0] << std::endl;
-            std::cout << "pooling region: " << kernelSize[0] << "x" << kernelSize[1] << std::endl;
-            std::cout << "pooling stride: " << kernelStride[0] << "x" << kernelStride[1] << std::endl;
-            std::cout << "padding: " << inputOffset[0] << "x" << inputOffset[1] << std::endl;
-            std::cout << "ignore_border: " << %(ignore_border)s << std::endl;
+            std::cout << "inputSize     : " << inputSize[3] << " x " << inputSize[2] << " x " << inputSize[1] << " x " << inputSize[0] << std::endl;
+            std::cout << "outputSize    : " << outputSize[3] << " x " << outputSize[2] << " x " << outputSize[1] << " x " << outputSize[0] << std::endl;
+            std::cout << "pooling region: " << kernelSize[1] << " x " << kernelSize[0] << std::endl;
+            std::cout << "pooling stride: " << kernelStride[1] << " x " << kernelStride[0] << std::endl;
+            std::cout << "padding       : " << inputOffset[3] << " x " << inputOffset[2] << " x " << inputOffset[1] << " x " << inputOffset[0] << std::endl;
+            std::cout << "ignore_border : " << %(ignore_border)s << std::endl;
         #endif
 
-        x_internal_layout_get_from_previous_op = ((dnnLayout_t*)PyArray_DATA(%(x)s))[0];
-
-        if (NULL == pPoolingBwd) {
-            CHECK_ERR( dnnPoolingCreateBackward_%(precision)s(&pPoolingBwd, NULL,
-                       %(algo)s, x_internal_layout_get_from_previous_op, kernelSize,
-                       kernelStride, inputOffset, %(borderType)s), err );
-        }
-
-        if (NULL == pPoolingFwd) {
-            CHECK_ERR( dnnPoolingCreateForward_%(precision)s(&pPoolingFwd, NULL,
-                       %(algo)s, x_internal_layout_get_from_previous_op, kernelSize,
-                       kernelStride, inputOffset, %(borderType)s), err );
-        }
-
-        if (NULL == x_internal_layout) {
-            CHECK_ERR( dnnLayoutCreateFromPrimitive_%(precision)s(
-                       &x_internal_layout, pPoolingFwd, dnnResourceSrc), err );
-        }
-        if (NULL == gz_internal_layout) {
-            CHECK_ERR( dnnLayoutCreateFromPrimitive_%(precision)s(
-                       &gz_internal_layout, pPoolingFwd, dnnResourceDst), err );
-        }
-
-        if (NULL == x_internal_buffer) {
-            CHECK_ERR( dnnAllocateBuffer_%(precision)s((void**)&x_internal_buffer, x_internal_layout) , err );
-            input_buffer_size = dnnLayoutGetMemorySize_%(precision)s(x_internal_layout);
-        }
-        #pragma omp parallel for
-        #pragma ivdep
-        for(int i = 0 ; i < input_buffer_size/sizeof(%(dtype)s); ++i) {
-             ((unsigned int*)x_internal_buffer)[i] = 0;
-        }
-
-        // Prepare output array
-        npy_intp out_dim[4];
-        out_dim[0] = PyArray_DIMS(%(x)s)[0];
-        out_dim[1] = PyArray_DIMS(%(x)s)[1];
-        out_dim[2] = PyArray_DIMS(%(x)s)[2];
-        out_dim[3] = PyArray_DIMS(%(x)s)[3];
         if ( !(%(gx)s
-            && PyArray_NDIM(%(gx)s)==4
-            && PyArray_DIMS(%(gx)s)[0]==out_dim[0]
-            && PyArray_DIMS(%(gx)s)[1]==out_dim[1]
-            && PyArray_DIMS(%(gx)s)[2]==out_dim[2]
-            && PyArray_DIMS(%(gx)s)[3]==out_dim[3])) {
-
+               && MKLNdarray_Check((PyObject *)%(gx)s)
+               && MKLNdarray_NDIM(%(gx)s) == ndim
+               && MKLNdarray_DIMS(%(gx)s)[0] == MKLNdarray_DIMS(%(x)s)[0]
+               && MKLNdarray_DIMS(%(gx)s)[1] == MKLNdarray_DIMS(%(x)s)[1]
+               && MKLNdarray_DIMS(%(gx)s)[2] == MKLNdarray_DIMS(%(x)s)[2]
+               && MKLNdarray_DIMS(%(gx)s)[3] == MKLNdarray_DIMS(%(x)s)[3] )) {
             if (%(gx)s) Py_XDECREF(%(gx)s);
 
-            %(gx)s = (PyArrayObject*)PyArray_ZEROS(DIMENSION,
-                                                   out_dim,
-                                                   PyArray_TYPE(%(x)s),
-                                                   0);
+            %(gx)s = (MKLNdarray *)MKLNdarray_New(ndim, typenum);
             if (NULL == %(gx)s) {
-                PyErr_Format(PyExc_RuntimeError,
-                            "PoolGrad: Failed to allocate gx of %%lld x %%lld x %%lld x %%lld",
-                            (long long)out_dim[0], (long long)out_dim[1], (long long)out_dim[2], (long long)out_dim[3]);
                 %(fail)s
+            }
+
+            ret = MKLNdarray_set_structure(%(gx)s, ndim, MKLNdarray_DIMS(%(x)s));
+            if (ret != 0) {
+                %(fail)s;
+            }
+
+            ret = MKLNdarray_create_buffer_from_primitive(%(gx)s, &pool_bwd, dnnResourceDiffSrc);
+            if (ret != 0) {
+                %(fail)s;
             }
         }
 
-        gz_internal_layout_get_from_previous_op = ((dnnLayout_t*)PyArray_DATA(%(gz)s))[0];
-        gz_internal_buffer_get_from_previous_op = ((void **)PyArray_DATA(%(gz)s))[1];
-
-        workspace_internal_layout = *(((dnnLayout_t**)workspace_ptr)[0]);
-        pool_res[dnnResourceWorkspace] = ((void**)workspace_ptr)[1];
+        #pragma omp parallel for
+        #pragma ivdep
+        for(int i = 0 ; i < (MKLNdarray_DIMS(%(gx)s)[0] * MKLNdarray_STRIDES(%(gx)s)[0]); ++i) {
+             ((unsigned int *)MKLNdarray_DATA(%(gx)s))[i] = 0;
+        }
 
         if (1 == first_run) {
-            if (!dnnLayoutCompare_%(precision)s(gz_internal_layout_get_from_previous_op, gz_internal_layout)) {
+            if (!dnnLayoutCompare_%(precision)s(MKLNdarray_LAYOUT(%(gz)s), gz_internal_layout)) {
             #ifdef _MKL_DEBUG_
                 std::cout<<"pool backward, gz layout is not equal" <<std::endl;
             #endif
                 if (NULL == convert_gz_to_internal) {
-                    CHECK_ERR( dnnConversionCreate_%(precision)s(&convert_gz_to_internal, gz_internal_layout_get_from_previous_op, gz_internal_layout), err );
+                    CHECK_ERR( dnnConversionCreate_%(precision)s(&convert_gz_to_internal, MKLNdarray_LAYOUT(%(gz)s),  gz_internal_layout), err );
                  }
             }
         }
@@ -857,46 +805,37 @@ class PoolGrad(PoolBase):
             if (NULL == gz_internal_buffer) {
                 CHECK_ERR( dnnAllocateBuffer_%(precision)s((void**)&gz_internal_buffer, gz_internal_layout), err );
             }
-            CHECK_ERR( dnnConversionExecute_%(precision)s(convert_gz_to_internal, gz_internal_buffer_get_from_previous_op, gz_internal_buffer), err );
+            CHECK_ERR( dnnConversionExecute_%(precision)s(convert_gz_to_internal, MKLNdarray_DATA(%(gz)s), gz_internal_buffer), err );
         } else {
-             gz_internal_buffer = gz_internal_buffer_get_from_previous_op;
+             gz_internal_buffer = MKLNdarray_DATA(%(gz)s);
         }
+
+        pool_res[dnnResourceWorkspace] = MKLNdarray_WORKSPACE(%(x)s);
         pool_res[dnnResourceDiffDst] = gz_internal_buffer;
         pool_res[dnnResourceDiffSrc] = x_internal_buffer;
 
         #ifdef _MKL_DEBUG_
             input_bytes = dnnLayoutGetMemorySize_%(precision)s(x_internal_layout);
             output_bytes = dnnLayoutGetMemorySize_%(precision)s(gz_internal_layout);
-            workspace_bytes = dnnLayoutGetMemorySize_%(precision)s(workspace_internal_layout);
             std::cout << " input_bytes = " << input_bytes << std::endl;
             std::cout << " output_bytes = " << output_bytes << std::endl;
-            std::cout << " workspace_bytes =  " << workspace_bytes << std::endl;
         #endif
 
-        CHECK_ERR( dnnExecute_%(precision)s(pPoolingBwd, (void**)pool_res), err );
+        CHECK_ERR( dnnExecute_%(precision)s(pool_bwd, (void**)pool_res), err );
 
-        if (!dnnLayoutCompare_%(precision)s(x_internal_layout, x_internal_layout_get_from_previous_op)) {
+        if (!dnnLayoutCompare_%(precision)s(x_internal_layout, MKLNdarray_LAYOUT(%(x)s))) {
             #ifdef _MKL_DEBUG_
                 std::cout<<"pool backward, x layout is not equal" <<std::endl;
             #endif
             if (NULL == convert_x_to_internal) {
-                CHECK_ERR( dnnConversionCreate_%(precision)s(&convert_x_to_internal, x_internal_layout, x_internal_layout_get_from_previous_op), err );
+                CHECK_ERR( dnnConversionCreate_%(precision)s(&convert_x_to_internal, x_internal_layout, MKLNdarray_LAYOUT(%(gx)s)), err );
             }
-        }
-        if (convert_x_to_internal) {
-            if (NULL == x_internal_buffer_to_previous) {
-                CHECK_ERR( dnnAllocateBuffer_%(precision)s((void**)&x_internal_buffer_to_previous, x_internal_layout_get_from_previous_op ), err );
-            }
-            CHECK_ERR( dnnConversionExecute_%(precision)s(convert_x_to_internal, x_internal_buffer, x_internal_buffer_to_previous), err );
-         } else {
-            x_internal_buffer_to_previous = x_internal_buffer;
         }
 
-        ((dnnLayout_t*)PyArray_DATA(%(gx)s))[0] = x_internal_layout_get_from_previous_op;
-        ((void**)PyArray_DATA(%(gx)s))[1] = x_internal_buffer_to_previous;
+        CHECK_ERR( dnnConversionCreate_%(precision)s(&convert_x_to_internal, x_internal_layout, MKLNdarray_LAYOUT(%(gx)s)), err );
+        CHECK_ERR( dnnConversionExecute_%(precision)s(convert_x_to_internal, x_internal_buffer, MKLNdarray_DATA(%(gx)s)), err );
 
         first_run = 0;
-
         """ % sub
 
         return ccode

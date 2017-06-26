@@ -119,9 +119,10 @@ class BaseConvertOp(MKLOp):
 class U2IPool(BaseConvertOp):
     __props__ = ('ignore_border', 'mode')
 
-    def __init__(self, ignore_border=False, mode='max'):
+    def __init__(self, ignore_border=False, mode='max', ndim=2):
         self.ignore_border = ignore_border
         self.mode = mode
+        self.ndim = ndim
 
     def make_node(self, x, ws, stride=None, pad=(0, 0)):
         x = T.as_tensor_variable(x)
@@ -131,9 +132,11 @@ class U2IPool(BaseConvertOp):
         ws = T.as_tensor_variable(ws)
         stride = T.as_tensor_variable(stride)
         pad = T.as_tensor_variable(pad)
+        nd = self.ndim
 
-        broad = x.broadcastable[:2] + (False, False)
-        out = T.TensorType(x.dtype, broad)
+        broad = x.broadcastable[:-nd] + (False,) * nd
+        out = MKLNdarrayType(x.dtype, broad)
+
         return Apply(self, [x, ws, stride, pad], [out()])
 
     def grad(self, inp, grads):
@@ -157,7 +160,13 @@ class U2IPool(BaseConvertOp):
 
         fail = sub['fail']
 
-        ignore_border = self.ignore_border
+        if self.ignore_border:
+            borderType = 'dnnBorderZerosAsymm'
+            ignore_border = 1
+        else:
+            borderType = 'dnnBorderZeros'
+            ignore_border = 0
+
         if 'max' == self.mode:
             algo = "dnnAlgorithmPoolingMax"
         elif 'min' == self.mode:
@@ -171,6 +180,13 @@ class U2IPool(BaseConvertOp):
                              "'average_exc_pad', and 'average_inc_pad'")
 
         ccode = """
+            int typenum = PyArray_TYPE(%(x)s);
+            int ndim = PyArray_NDIM(%(x)s);
+            size_t dims[MAX_NDIM] = {0};
+            for (int i = 0; i < ndim; i++) {
+                dims[i] = (size_t)PyArray_DIMS(%(x)s)[i];
+            }
+
             if (1 == first_run) {
                 bottomSize[0] = PyArray_DIMS(%(x)s)[3];  //w
                 bottomSize[1] = PyArray_DIMS(%(x)s)[2];  //h
@@ -190,51 +206,65 @@ class U2IPool(BaseConvertOp):
 
                 size_t kernelSize[2] = {kernel_w, kernel_h};
                 size_t kernelStride[2] = {stride_w, stride_h};
-                int inputOffset[2] = {-pad_w, -pad_h};
+                int inputOffset[4] = {0};
+
+                if (%(ignore_border)s) {
+                    inputOffset[0] = -pad_w;
+                    inputOffset[1] = -pad_h;
+                    inputOffset[2] = -pad_w;
+                    inputOffset[3] = -pad_h;
+                } else {
+                    inputOffset[0] = -pad_w;
+                    inputOffset[1] = -pad_h;
+                }
 
                 //create user layout
                 CHECK_ERR( dnnLayoutCreate_%(precision)s(&layout_user, DIMENSION, bottomSize, bottomStride), err );
 
                 CHECK_ERR( dnnPoolingCreateForward_%(precision)s(&primitive, NULL, %(algo)s,
-                           layout_user, kernelSize, kernelStride, inputOffset, dnnBorderZeros), err );
+                           layout_user, kernelSize, kernelStride, inputOffset, %(borderType)s), err );
+            }
 
-                //create internal layout
-                CHECK_ERR( dnnLayoutCreateFromPrimitive_%(precision)s(&layout_internal, primitive, dnnResourceSrc), err );
+            if ( !(%(z)s
+                   && MKLNdarray_Check((PyObject *)%(z)s)
+                   && MKLNdarray_NDIM(%(z)s) == PyArray_NDIM(%(x)s)
+                   && MKLNdarray_DIMS(%(z)s)[0] == PyArray_DIMS(%(x)s)[0]
+                   && MKLNdarray_DIMS(%(z)s)[1] == PyArray_DIMS(%(x)s)[1]
+                   && MKLNdarray_DIMS(%(z)s)[2] == PyArray_DIMS(%(x)s)[2]
+                   && MKLNdarray_DIMS(%(z)s)[3] == PyArray_DIMS(%(x)s)[3]) ) {
+                if (%(z)s) Py_XDECREF(%(z)s);
 
-                if (!dnnLayoutCompare_%(precision)s(layout_user, layout_internal)) {
-                    if(NULL == to_internal) {
-                        CHECK_ERR( dnnConversionCreate_%(precision)s(&to_internal, layout_user, layout_internal), err );
+                %(z)s = (MKLNdarray *)MKLNdarray_New(PyArray_NDIM(%(x)s), typenum);
+                if (NULL == %(z)s) {
+                    %(fail)s
+                }
+
+                int status = MKLNdarray_set_structure(%(z)s, ndim, dims);
+                if (status != 0) {
+                    %(fail)s
+                }
+
+                status = MKLNdarray_create_buffer_from_primitive(%(z)s, &primitive, dnnResourceSrc);
+                if (status != 0) {
+                    %(fail)s
+                }
+            }
+
+            if (1 == first_run) {
+                if (!dnnLayoutCompare_%(precision)s(layout_user, MKLNdarray_LAYOUT(%(z)s))) {
+                    if (NULL == to_internal) {
+                        CHECK_ERR( dnnConversionCreate_%(precision)s(&to_internal, layout_user, MKLNdarray_LAYOUT(%(z)s)), err );
                     }
                 }
             }
 
-            if (NULL == %(z)s) {
-                %(z)s = (PyArrayObject*)PyArray_ZEROS(DIMENSION,
-                                                      PyArray_DIMS(%(x)s),
-                                                      PyArray_TYPE(%(x)s),
-                                                      0);
-                if(NULL == %(z)s) {
-                    %(fail)s
-                }
-
-                if (NULL == internal_buf) {
-                    CHECK_ERR( dnnAllocateBuffer_%(precision)s((void**)&internal_buf, layout_internal), err );
-                }
-            }
-
             if (to_internal) {
-                convert_resources[dnnResourceFrom] = (PyArray_DATA(%(x)s));
-                convert_resources[dnnResourceTo] = (void *)(internal_buf);
-
-                CHECK_ERR( dnnExecute_%(precision)s(to_internal, convert_resources), err );
+                CHECK_ERR( dnnConversionExecute_%(precision)s(to_internal,
+                                                              PyArray_DATA(%(x)s),
+                                                              MKLNdarray_DATA(%(z)s)), err );
             } else {
-                internal_buf = (PyArray_DATA(%(x)s));
+                memcpy(MKLNdarray_DATA(%(z)s), (void*)PyArray_DATA(%(x)s), %(z)s->data_size);
             }
-
-            if(layout_internal != ((dnnLayout_t*)PyArray_DATA(%(z)s))[0])
-                ((dnnLayout_t*)PyArray_DATA(%(z)s))[0] = layout_internal;
-            if(internal_buf != ((void**)PyArray_DATA(%(z)s))[1])
-                ((void**)PyArray_DATA(%(z)s))[1] = internal_buf;
 
             first_run = 0;
 
@@ -361,11 +391,9 @@ class U2IRelu(BaseConvertOp):
                 }
             }
 
-            if (1 == first_run) {
-                if (!dnnLayoutCompare_%(precision)s(layout_user, MKLNdarray_LAYOUT(%(z)s))) {
-                    if (NULL == to_internal) {
-                        CHECK_ERR( dnnConversionCreate_%(precision)s(&to_internal, layout_user, MKLNdarray_LAYOUT(%(z)s)), err );
-                    }
+            if (!dnnLayoutCompare_%(precision)s(layout_user, MKLNdarray_LAYOUT(%(z)s))) {
+                if (NULL == to_internal) {
+                    CHECK_ERR( dnnConversionCreate_%(precision)s(&to_internal, layout_user, MKLNdarray_LAYOUT(%(z)s)), err );
                 }
             }
 
@@ -378,7 +406,6 @@ class U2IRelu(BaseConvertOp):
             }
 
             first_run = 0;
-
             #ifdef _MKL_DEBUG_
                 std::cout << "U2IRelu: from buffer: " << convert_resources[dnnResourceFrom] << " to buffer: " << convert_resources[dnnResourceTo] << std::endl;
             #endif
@@ -785,14 +812,15 @@ class U2IConv(BaseConvertOp):
                 CHECK_ERR( dnnGroupsConvolutionCreateForward_%(precision)s(&primitive, NULL,
                            dnnAlgorithmConvolutionDirect, group, DIMENSION, imageSize, zSize,
                            weightSize, convStride, convPadding, dnnBorderZeros), err );
+
                 CHECK_ERR( dnnLayoutCreateFromPrimitive_%(precision)s(&layout_internal, primitive, dnnResourceSrc), err );
-                
+
                 if (!dnnLayoutCompare_%(precision)s(layout_user, layout_internal)) {
                     CHECK_ERR( dnnConversionCreate_%(precision)s(&to_internal, layout_user, layout_internal), err );
                 } else {
                     to_internal = NULL;
                 }
-                
+
                 CHECK_ERR( dnnAllocateBuffer_%(precision)s((void**)&internal_buf, layout_internal), err );
             }
 
@@ -806,7 +834,7 @@ class U2IConv(BaseConvertOp):
 
                //free previous data and re-allocate buf
                if (%(z)s) Py_XDECREF(%(z)s);
-               
+
                %(z)s = (MKLNdarray *)MKLNdarray_New(PyArray_NDIM(%(x)s), PyArray_TYPE(%(x)s));
                if (NULL == %(z)s) {
                    %(fail)s
