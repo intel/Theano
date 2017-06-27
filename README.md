@@ -44,14 +44,6 @@ This repo is dedicated to improving Theano performance on CPU, especially in Int
   * Add bias after convolution to archieve high performance since this sub-graph can be replaced with MKL Op
   * Use group convolution OP, [AbstractConvGroup](https://github.com/intel/Theano/blob/master/theano/sandbox/mkl/mkl_conv.py)
   * Use New MKL OP: [LRN](https://github.com/intel/Theano/blob/master/theano/tensor/nnet/lrn.py)
-  * Intel® Xeon Phi™ Environment Setting, example as below
-        
-        #!/bin/sh
-        export KMP_BLOCKTIME=1
-        export KMP_AFFINITY=verbose, granularity=core,noduplicates,compact,0,0
-        export OMP_NUM_THREADS=68
-        export MKL_DYNAMIC=false
-        python xxx.py
 
 **Branch Information**
   * master, stable and fully tested version based on 0.9dev2 with Intel® MKL backend
