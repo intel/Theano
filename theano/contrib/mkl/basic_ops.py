@@ -470,3 +470,269 @@ class U2IConv(BaseConvertOp):
             first_run = 0;
         """ % locals()
         return ccode
+
+
+class U2IPool(BaseConvertOp):
+    __props__ = ('ignore_border', 'mode')
+
+    def __init__(self, ignore_border=False, mode='max', ndim=2):
+        self.ignore_border = ignore_border
+        self.mode = mode
+        self.ndim = ndim
+
+    def make_node(self, x, ws, stride=None, pad=(0, 0)):
+        x = T.as_tensor_variable(x)
+        if stride is None:
+            stride = ws
+
+        ws = T.as_tensor_variable(ws)
+        stride = T.as_tensor_variable(stride)
+        pad = T.as_tensor_variable(pad)
+        nd = self.ndim
+
+        broad = x.broadcastable[:-nd] + (False,) * nd
+        out = MKLNdarrayType(x.dtype, broad)
+
+        return Apply(self, [x, ws, stride, pad], [out()])
+
+    def grad(self, inp, grads):
+        x, ws, stride, pad = inp
+        gz, = grads
+        disc = [DisconnectedType()() for i in inp[1:]]
+
+        return [U2IGrad()(x, gz)] + disc
+
+    def c_code(self, node, name, inp, out, sub):
+        x, ws, stride, pad = inp
+        z, = out
+
+        if 'float32' == node.inputs[0].type.dtype:
+            precision = 'F32'
+        elif 'float64' == node.inputs[0].type.dtype:
+            precision = 'F64'
+        else:
+            raise TypeError("Type %s is not supported!" %
+                            node.inputs[0].type.dtype)
+
+        fail = sub['fail']
+
+        if self.ignore_border:
+            borderType = 'dnnBorderZerosAsymm'
+            ignore_border = 1
+        else:
+            borderType = 'dnnBorderZeros'
+            ignore_border = 0
+
+        if 'max' == self.mode:
+            algo = "dnnAlgorithmPoolingMax"
+        elif 'min' == self.mode:
+            algo = 'dnnAlgorithmPoolingMin'
+        elif 'average_exc_pad' == self.mode:
+            algo = "dnnAlgorithmPoolingAvgExcludePadding"
+        elif 'average_inc_pad' == self.mode:
+            algo = "dnnAlgorithmPoolingAvgIncludePadding"
+        else:
+            raise ValueError("mode must be one of 'max', 'min', "
+                             "'average_exc_pad', and 'average_inc_pad'")
+
+        ccode = """
+            int status = 0;
+            int typenum = PyArray_TYPE(%(x)s);
+            int ndim = PyArray_NDIM(%(x)s);
+            size_t dims[MAX_NDIM] = {0};
+            for (int i = 0; i < ndim; i++) {
+                dims[i] = (size_t)PyArray_DIMS(%(x)s)[i];
+            }
+
+            if (1 == first_run) {
+                bottomSize[0] = PyArray_DIMS(%(x)s)[3];  //w
+                bottomSize[1] = PyArray_DIMS(%(x)s)[2];  //h
+                bottomSize[2] = PyArray_DIMS(%(x)s)[1];  //c
+                bottomSize[3] = PyArray_DIMS(%(x)s)[0];  //n
+                bottomStride[0] = 1;
+                bottomStride[1] = bottomSize[0];
+                bottomStride[2] = bottomSize[0] * bottomSize[1];
+                bottomStride[3] = bottomSize[0] * bottomSize[1] * bottomSize[2];
+
+                size_t kernel_h = *((npy_intp*)PyArray_GETPTR1(%(ws)s, 0));
+                size_t kernel_w = *((npy_intp*)PyArray_GETPTR1(%(ws)s, 1));
+                size_t stride_h = *((npy_intp*)PyArray_GETPTR1(%(stride)s, 0));
+                size_t stride_w = *((npy_intp*)PyArray_GETPTR1(%(stride)s, 1));
+                size_t pad_h = *((npy_intp*)PyArray_GETPTR1(%(pad)s, 0));
+                size_t pad_w = *((npy_intp*)PyArray_GETPTR1(%(pad)s, 1));
+
+                size_t kernelSize[2] = {kernel_w, kernel_h};
+                size_t kernelStride[2] = {stride_w, stride_h};
+                int inputOffset[4] = {0};
+
+                if (%(ignore_border)s) {
+                    inputOffset[0] = -pad_w;
+                    inputOffset[1] = -pad_h;
+                    inputOffset[2] = -pad_w;
+                    inputOffset[3] = -pad_h;
+                } else {
+                    inputOffset[0] = -pad_w;
+                    inputOffset[1] = -pad_h;
+                }
+
+                //create user layout
+                CHECK_ERR( dnnLayoutCreate_%(precision)s(&layout_user, DIMENSION, bottomSize, bottomStride), err );
+
+                CHECK_ERR( dnnPoolingCreateForward_%(precision)s(&primitive, NULL, %(algo)s,
+                           layout_user, kernelSize, kernelStride, inputOffset, %(borderType)s), err );
+            }
+
+            if ( !(%(z)s
+                   && MKLNdarray_Check((PyObject *)%(z)s)
+                   && MKLNdarray_NDIM(%(z)s) == PyArray_NDIM(%(x)s)
+                   && MKLNdarray_DIMS(%(z)s)[0] == PyArray_DIMS(%(x)s)[0]
+                   && MKLNdarray_DIMS(%(z)s)[1] == PyArray_DIMS(%(x)s)[1]
+                   && MKLNdarray_DIMS(%(z)s)[2] == PyArray_DIMS(%(x)s)[2]
+                   && MKLNdarray_DIMS(%(z)s)[3] == PyArray_DIMS(%(x)s)[3]) ) {
+                if (%(z)s) Py_XDECREF(%(z)s);
+
+                %(z)s = (MKLNdarray *)MKLNdarray_New(PyArray_NDIM(%(x)s), typenum);
+                if (NULL == %(z)s) {
+                    %(fail)s
+                }
+
+                status = MKLNdarray_set_structure(%(z)s, ndim, dims);
+                if (status != 0) {
+                    %(fail)s
+                }
+
+                status = MKLNdarray_create_buffer_from_primitive(%(z)s, &primitive, dnnResourceSrc);
+                if (status != 0) {
+                    %(fail)s
+                }
+            }
+
+            if (1 == first_run) {
+                if (!dnnLayoutCompare_%(precision)s(layout_user, MKLNdarray_LAYOUT(%(z)s))) {
+                    if (NULL == to_internal) {
+                        CHECK_ERR( dnnConversionCreate_%(precision)s(&to_internal, layout_user, MKLNdarray_LAYOUT(%(z)s)), err );
+                    }
+                }
+            }
+
+            if (to_internal) {
+                CHECK_ERR( dnnConversionExecute_%(precision)s(to_internal,
+                                                              PyArray_DATA(%(x)s),
+                                                              MKLNdarray_DATA(%(z)s)), err );
+            } else {
+                memcpy(MKLNdarray_DATA(%(z)s), (void*)PyArray_DATA(%(x)s), %(z)s->data_size);
+            }
+
+            first_run = 0;
+
+            #ifdef _MKL_DEBUG_
+                std::cout << "U2IPool: from buffer: " << convert_resources[dnnResourceFrom] << " to buffer: " << convert_resources[dnnResourceTo] << std::endl;
+            #endif
+        """ % locals()
+        return ccode
+
+    def connection_pattern(self, node):
+        return [[1], [0], [0], [0]]
+
+
+class U2IRelu(BaseConvertOp):
+    __props__ = ('slope', )
+
+    def __init__(self, slope=0):
+        self.slope = slope
+
+    def make_node(self, x):
+        x = T.as_tensor_variable(x)
+        out = MKLNdarrayType(broadcastable=x.type.broadcastable, dtype=x.dtype)()
+
+        return Apply(self, [x], [out])
+
+    def grad(self, inp, grads):
+        x, = inp
+        gz, = grads
+
+        return [U2IGrad()(x, gz)]
+
+    def c_code(self, node, name, inp, out, sub):
+        x, = inp
+        z, = out
+
+        slope = self.slope
+        if 'float32' == node.inputs[0].type.dtype:
+            precision = 'F32'
+        elif 'float64' == node.inputs[0].type.dtype:
+            precision = 'F64'
+        else:
+            raise TypeError("Type %s is not supported!" %
+                            node.inputs[0].type.dtype)
+
+        fail = sub['fail']
+
+        ccode = """
+            int typenum = PyArray_TYPE(%(x)s);
+            int ndim = PyArray_NDIM(%(x)s);
+            size_t dims[MAX_NDIM] = {0};
+            for (int i = 0; i < ndim; i++) {
+                dims[i] = (size_t)PyArray_DIMS(%(x)s)[i];
+            }
+
+            if (1 == first_run) {
+                bottomSize[0] = PyArray_DIMS(%(x)s)[3];  //w
+                bottomSize[1] = PyArray_DIMS(%(x)s)[2];  //h
+                bottomSize[2] = PyArray_DIMS(%(x)s)[1];  //c
+                bottomSize[3] = PyArray_DIMS(%(x)s)[0];  //n
+                bottomStride[0] = 1;
+                bottomStride[1] = bottomSize[0];
+                bottomStride[2] = bottomSize[0] * bottomSize[1];
+                bottomStride[3] = bottomSize[0] * bottomSize[1] * bottomSize[2];
+
+                //create user layout
+                CHECK_ERR( dnnLayoutCreate_%(precision)s(&layout_user, DIMENSION, bottomSize, bottomStride), err );
+                CHECK_ERR( dnnReLUCreateForward_%(precision)s(&primitive, NULL, layout_user, %(slope)s), err );
+            }
+
+            if ( !(%(z)s
+                   && MKLNdarray_Check((PyObject *)%(z)s)
+                   && MKLNdarray_NDIM(%(z)s) == PyArray_NDIM(%(x)s)
+                   && MKLNdarray_DIMS(%(z)s)[0] == PyArray_DIMS(%(x)s)[0]
+                   && MKLNdarray_DIMS(%(z)s)[1] == PyArray_DIMS(%(x)s)[1]
+                   && MKLNdarray_DIMS(%(z)s)[2] == PyArray_DIMS(%(x)s)[2]
+                   && MKLNdarray_DIMS(%(z)s)[3] == PyArray_DIMS(%(x)s)[3]) ) {
+                if (%(z)s) Py_XDECREF(%(z)s);
+
+                %(z)s = (MKLNdarray *)MKLNdarray_New(PyArray_NDIM(%(x)s), typenum);
+                if (NULL == %(z)s) {
+                    %(fail)s
+                }
+
+                int status = MKLNdarray_set_structure(%(z)s, ndim, dims);
+                if (status != 0) {
+                    %(fail)s
+                }
+
+                status = MKLNdarray_create_buffer_from_primitive(%(z)s, &primitive, dnnResourceSrc);
+                if (status != 0) {
+                    %(fail)s
+                }
+            }
+
+            if (!dnnLayoutCompare_%(precision)s(layout_user, MKLNdarray_LAYOUT(%(z)s))) {
+                if (NULL == to_internal) {
+                    CHECK_ERR( dnnConversionCreate_%(precision)s(&to_internal, layout_user, MKLNdarray_LAYOUT(%(z)s)), err );
+                }
+            }
+
+            if (to_internal) {
+                CHECK_ERR( dnnConversionExecute_%(precision)s(to_internal,
+                                                              PyArray_DATA(%(x)s),
+                                                              MKLNdarray_DATA(%(z)s)), err );
+            } else {
+                memcpy(MKLNdarray_DATA(%(z)s), (void*)PyArray_DATA(%(x)s), %(z)s->data_size);
+            }
+
+            first_run = 0;
+            #ifdef _MKL_DEBUG_
+                std::cout << "U2IRelu: from buffer: " << convert_resources[dnnResourceFrom] << " to buffer: " << convert_resources[dnnResourceTo] << std::endl;
+            #endif
+        """ % locals()
+        return ccode

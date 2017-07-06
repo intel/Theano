@@ -252,5 +252,5 @@ if mkl_available():
                     raise
 
     # Note: will remove comments when opt.py was submitted.
-    # from . import opt
-    # opt.optdb.add_tags('mkl_opt', 'fast_compile', 'fast_run')
+    from . import opt
+    opt.optdb.add_tags('mkl_opt', 'fast_compile', 'fast_run')
