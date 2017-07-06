@@ -161,7 +161,7 @@ class U2IGrad(BaseConvertOp):
                                                      z_size,
                                                      z_stride), err);
 
-            if (!dnnLayoutCompare_%(precision)s(MKLNdarray_LAYOUT(%(gz)s), layout_user) {
+            if (!dnnLayoutCompare_%(precision)s(MKLNdarray_LAYOUT(%(gz)s), layout_user)) {
                 CHECK_ERR( dnnConversionCreate_%(precision)s(&from_internal,
                                                              MKLNdarray_LAYOUT(%(gz)s),
                                                              layout_user), err);
@@ -433,7 +433,7 @@ class U2IConv(BaseConvertOp):
                     dims[i] = (size_t)x_dims[i];
                 }
 
-                %(z)s = (MKLNdarray*)MKLNdarray_New(ndim, PyArray_TYPE(%(x)s);
+                %(z)s = (MKLNdarray*)MKLNdarray_New(ndim, PyArray_TYPE(%(x)s));
                 if (!%(z)s) {
                     %(fail)s;
                 }
