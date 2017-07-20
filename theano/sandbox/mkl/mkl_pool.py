@@ -890,6 +890,7 @@ class PoolGrad(PoolBase):
 
         CHECK_ERR( dnnExecute_%(precision)s(pPoolingBwd, (void**)pool_res), err );
 
+        #if 0
         if (!dnnLayoutCompare_%(precision)s(x_internal_layout, x_internal_layout_get_from_previous_op)) {
             #ifdef _MKL_DEBUG_
                 std::cout<<"pool backward, x layout is not equal" <<std::endl;
@@ -909,6 +910,9 @@ class PoolGrad(PoolBase):
 
         ((dnnLayout_t*)PyArray_DATA(%(gx)s))[0] = x_internal_layout_get_from_previous_op;
         ((void**)PyArray_DATA(%(gx)s))[1] = x_internal_buffer_to_previous;
+        #endif
+        ((dnnLayout_t*)PyArray_DATA(%(gx)s))[0] = x_internal_layout;
+        ((void**)PyArray_DATA(%(gx)s))[1] = x_internal_buffer;
 
         #ifdef _MKL_DEBUG_
             std::cout<<"poolgrad end\\n"<<std::endl;

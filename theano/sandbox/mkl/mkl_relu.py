@@ -412,7 +412,7 @@ class ReluGrad(basic_ops.MKLOp):
             //printf(\"reluGrad:%%x, %%x\\n\",bwd_top_diff_int_l,input_gz);
 
             if(first_run){
-                if (E_SUCCESS != dnnReLUCreateBackward_%(precision)s(&reluBwd, NULL, bwd_bottom_diff_int_l,
+                if (E_SUCCESS != dnnReLUCreateBackward_%(precision)s(&reluBwd, NULL, bwd_top_diff_int_l,
                     bwd_bottom_diff_int_l, %(slope)s)){
                     std::cout<<"relu bwd creat fail\\n";
                 }

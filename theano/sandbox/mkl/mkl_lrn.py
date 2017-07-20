@@ -452,10 +452,11 @@ class LRNGrad(basic_ops.MKLOp):
 
             x_layout_previous = ((dnnLayout_t *)PyArray_DATA(%(x)s))[0];
             x_buf_previous = ((void **)PyArray_DATA(%(x)s))[1];
+            gz_layout = ((dnnLayout_t *)PyArray_DATA(%(gz)s))[0];
             buf_gz = ((void**)PyArray_DATA(%(gz)s))[1];
 
             if (first_run) {
-                CHECK_ERR( dnnLRNCreateBackward_%(precision)s(&primitive, NULL, x_layout_previous, x_layout_previous,
+                CHECK_ERR( dnnLRNCreateBackward_%(precision)s(&primitive, NULL, gz_layout, x_layout_previous,
                                                               %(size)s, %(alpha)s, %(beta)s, %(k)s), err );
             }
 
