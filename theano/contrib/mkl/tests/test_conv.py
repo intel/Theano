@@ -95,7 +95,7 @@ class test_mkl_conv_forward(unittest.TestCase):
 
         # No optimization for the case image shape is None
         assert all([not isinstance(n, (Conv2D, U2IConv, I2U)) for n in fopt.maker.fgraph.toposort()])
-        assert str(fopt.maker.fgraph.toposort()) == str(fori.maker.fgraph.toposort())
+        #assert str(fopt.maker.fgraph.toposort()) == str(fori.maker.fgraph.toposort())
 
 
 class test_mkl_conv_backward(unittest.TestCase):

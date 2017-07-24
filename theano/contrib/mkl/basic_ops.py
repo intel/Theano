@@ -1,6 +1,7 @@
 import theano.tensor as T
 from theano.gof import Apply, Op
 from theano.tensor.blas import ldflags
+from theano.gradient import DisconnectedType
 from theano.tensor.nnet.abstract_conv import get_conv_output_shape
 from theano.contrib.mkl.mkl_helper import header_text
 from theano.contrib.mkl.mkl_type import MKLNdarrayType
@@ -539,7 +540,7 @@ class U2IPool(BaseConvertOp):
             int status = 0;
             int typenum = PyArray_TYPE(%(x)s);
             int ndim = PyArray_NDIM(%(x)s);
-            size_t dims[MAX_NDIM] = {0};
+            size_t dims[MNDA_MAX_NDIM] = {0};
             for (int i = 0; i < ndim; i++) {
                 dims[i] = (size_t)PyArray_DIMS(%(x)s)[i];
             }
@@ -671,7 +672,7 @@ class U2IRelu(BaseConvertOp):
         ccode = """
             int typenum = PyArray_TYPE(%(x)s);
             int ndim = PyArray_NDIM(%(x)s);
-            size_t dims[MAX_NDIM] = {0};
+            size_t dims[MNDA_MAX_NDIM] = {0};
             for (int i = 0; i < ndim; i++) {
                 dims[i] = (size_t)PyArray_DIMS(%(x)s)[i];
             }
