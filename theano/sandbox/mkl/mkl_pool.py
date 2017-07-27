@@ -239,10 +239,11 @@ class PoolBase(MKLOp):
         int inputOffset[4] = {0};
 
         void *x_internal_buffer = NULL;
-        void *x_internal_buffer_get_from_previous_op = NULL;
+        void *x_buffer = NULL;
         void *x_internal_buffer_to_previous = NULL;
         void *z_internal_buffer = NULL;
-        void *gz_internal_buffer_get_from_previous_op = NULL;
+        void *gx_internal_buffer = NULL;
+        void *gz_buffer = NULL;
         void *gz_internal_buffer = NULL;
         void *workspace_buffer = NULL;
 
@@ -250,17 +251,17 @@ class PoolBase(MKLOp):
         dnnPrimitive_t pPoolingFwd = NULL;
         dnnPrimitive_t pPoolingBwd = NULL;
         void *pool_res[dnnResourceNumber] = {0};
-        int input_buffer_size = 0;
+        int gx_buffer_size = 0;
 
         size_t input_bytes;
         size_t output_bytes;
         size_t workspace_bytes;
 
         dnnLayout_t x_internal_layout = NULL;
-        dnnLayout_t *x_internal_layout_ptr = NULL;
-        dnnLayout_t x_internal_layout_get_from_previous_op = NULL;
+        dnnLayout_t x_layout = NULL;
         dnnLayout_t z_internal_layout = NULL;
-        dnnLayout_t gz_internal_layout_get_from_previous_op = NULL;
+        dnnLayout_t gx_internal_layout = NULL;
+        dnnLayout_t gz_layout = NULL;
         dnnLayout_t gz_internal_layout = NULL;
         dnnLayout_t workspace_internal_layout = NULL;
         dnnPrimitive_t convert_gz_to_internal = NULL;
@@ -518,12 +519,12 @@ class Pool(PoolBase):
             std::cout << "ignore_border: " << %(ignore_border)s << std::endl;
         #endif
 
-        x_internal_layout_get_from_previous_op = ((dnnLayout_t*)PyArray_DATA(%(x)s))[0];
-        x_internal_buffer_get_from_previous_op = ((void **)PyArray_DATA(%(x)s))[1];
+        x_layout = ((dnnLayout_t*)PyArray_DATA(%(x)s))[0];
+        x_buffer = ((void **)PyArray_DATA(%(x)s))[1];
 
         if (NULL == pPoolingFwd) {
             CHECK_ERR( dnnPoolingCreateForward_%(precision)s(&pPoolingFwd, NULL,
-                       %(algo)s, x_internal_layout_get_from_previous_op, kernelSize,
+                       %(algo)s, x_layout, kernelSize,
                        kernelStride, inputOffset, %(borderType)s), err );
         }
 
@@ -576,30 +577,25 @@ class Pool(PoolBase):
             }
         }
 
-        if (!dnnLayoutCompare_%(precision)s(x_internal_layout_get_from_previous_op, x_internal_layout)) {
-            #ifdef _MKL_DEBUG_
-                std::cout<<"pool forward, x layout from previous op is not equal to internal layout" <<std::endl;
-            #endif
+        if (!dnnLayoutCompare_%(precision)s(x_layout, x_internal_layout)) {
             if (NULL == convert_x_to_internal) {
-                CHECK_ERR( dnnConversionCreate_%(precision)s(&convert_x_to_internal, x_internal_layout_get_from_previous_op, x_internal_layout), err );
+                CHECK_ERR( dnnConversionCreate_%(precision)s(&convert_x_to_internal, x_layout, x_internal_layout), err );
             }
         }
         if (convert_x_to_internal) {
             if (NULL == x_internal_buffer) {
                 CHECK_ERR( dnnAllocateBuffer_%(precision)s((void**)&x_internal_buffer, x_internal_layout), err );
             }
-            CHECK_ERR( dnnConversionExecute_%(precision)s(convert_x_to_internal, x_internal_buffer_get_from_previous_op, x_internal_buffer), err );
-            x_internal_layout_ptr = &x_internal_layout;
+            CHECK_ERR( dnnConversionExecute_%(precision)s(convert_x_to_internal, x_buffer, x_internal_buffer), err );
+            pool_res[dnnResourceSrc] = x_internal_buffer;
         } else {
-            x_internal_buffer = x_internal_buffer_get_from_previous_op;
-            x_internal_layout_ptr = &x_internal_layout_get_from_previous_op;
+            pool_res[dnnResourceSrc] = x_buffer;
         }
 
-        pool_res[dnnResourceSrc] = x_internal_buffer;
         pool_res[dnnResourceDst] = z_internal_buffer;
 
         #ifdef _MKL_DEBUG_
-            input_bytes = dnnLayoutGetMemorySize_%(precision)s(*x_internal_layout_ptr);
+            input_bytes = dnnLayoutGetMemorySize_%(precision)s(x_internal_layout);
             output_bytes = dnnLayoutGetMemorySize_%(precision)s(z_internal_layout);
             workspace_bytes = dnnLayoutGetMemorySize_%(precision)s(workspace_internal_layout);
             std::cout << " input_bytes = " << input_bytes << std::endl;
@@ -788,37 +784,31 @@ class PoolGrad(PoolBase):
             std::cout << "ignore_border: " << %(ignore_border)s << std::endl;
         #endif
 
-        x_internal_layout_get_from_previous_op = ((dnnLayout_t*)PyArray_DATA(%(x)s))[0];
+        x_layout = ((dnnLayout_t*)PyArray_DATA(%(x)s))[0];
 
         if (NULL == pPoolingBwd) {
             CHECK_ERR( dnnPoolingCreateBackward_%(precision)s(&pPoolingBwd, NULL,
-                       %(algo)s, x_internal_layout_get_from_previous_op, kernelSize,
+                       %(algo)s, x_layout, kernelSize,
                        kernelStride, inputOffset, %(borderType)s), err );
         }
 
-        if (NULL == pPoolingFwd) {
-            CHECK_ERR( dnnPoolingCreateForward_%(precision)s(&pPoolingFwd, NULL,
-                       %(algo)s, x_internal_layout_get_from_previous_op, kernelSize,
-                       kernelStride, inputOffset, %(borderType)s), err );
-        }
-
-        if (NULL == x_internal_layout) {
+        if (NULL == gx_internal_layout) {
             CHECK_ERR( dnnLayoutCreateFromPrimitive_%(precision)s(
-                       &x_internal_layout, pPoolingFwd, dnnResourceSrc), err );
+                       &gx_internal_layout, pPoolingBwd, dnnResourceDiffSrc), err );
         }
         if (NULL == gz_internal_layout) {
             CHECK_ERR( dnnLayoutCreateFromPrimitive_%(precision)s(
-                       &gz_internal_layout, pPoolingFwd, dnnResourceDst), err );
+                       &gz_internal_layout, pPoolingBwd, dnnResourceDiffDst), err );
         }
 
-        if (NULL == x_internal_buffer) {
-            CHECK_ERR( dnnAllocateBuffer_%(precision)s((void**)&x_internal_buffer, x_internal_layout) , err );
-            input_buffer_size = dnnLayoutGetMemorySize_%(precision)s(x_internal_layout);
+        if (NULL == gx_internal_buffer) {
+            CHECK_ERR( dnnAllocateBuffer_%(precision)s((void**)&gx_internal_buffer, gx_internal_layout) , err );
+            gx_buffer_size = dnnLayoutGetMemorySize_%(precision)s(gx_internal_layout);
         }
         #pragma omp parallel for
         #pragma ivdep
-        for(int i = 0 ; i < input_buffer_size/sizeof(%(dtype)s); ++i) {
-             ((unsigned int*)x_internal_buffer)[i] = 0;
+        for(int i = 0 ; i < gx_buffer_size/sizeof(%(dtype)s); ++i) {
+             ((unsigned int*)gx_internal_buffer)[i] = 0;
         }
 
         // Prepare output array
@@ -848,19 +838,18 @@ class PoolGrad(PoolBase):
             }
         }
 
-        gz_internal_layout_get_from_previous_op = ((dnnLayout_t*)PyArray_DATA(%(gz)s))[0];
-        gz_internal_buffer_get_from_previous_op = ((void **)PyArray_DATA(%(gz)s))[1];
+        gz_layout = ((dnnLayout_t*)PyArray_DATA(%(gz)s))[0];
+        gz_buffer = ((void **)PyArray_DATA(%(gz)s))[1];
 
         pool_res[dnnResourceWorkspace] = ((void **)PyArray_DATA(%(z)s))[2];
         workspace_internal_layout = ((dnnLayout_t *)PyArray_DATA(%(z)s))[3];
 
         if (1 == first_run) {
-            if (!dnnLayoutCompare_%(precision)s(gz_internal_layout_get_from_previous_op, gz_internal_layout)) {
-            #ifdef _MKL_DEBUG_
-                std::cout<<"pool backward, gz layout is not equal" <<std::endl;
-            #endif
+            if (!dnnLayoutCompare_%(precision)s(gz_layout, gz_internal_layout)) {
                 if (NULL == convert_gz_to_internal) {
-                    CHECK_ERR( dnnConversionCreate_%(precision)s(&convert_gz_to_internal, gz_internal_layout_get_from_previous_op, gz_internal_layout), err );
+                    printf(\"poolgrad, before creating conversion\\n\");
+                    CHECK_ERR( dnnConversionCreate_%(precision)s(&convert_gz_to_internal, gz_layout, gz_internal_layout), err );
+                    printf(\"poolgrad, after creating conversion\\n\");
                  }
             }
         }
@@ -869,15 +858,15 @@ class PoolGrad(PoolBase):
             if (NULL == gz_internal_buffer) {
                 CHECK_ERR( dnnAllocateBuffer_%(precision)s((void**)&gz_internal_buffer, gz_internal_layout), err );
             }
-            CHECK_ERR( dnnConversionExecute_%(precision)s(convert_gz_to_internal, gz_internal_buffer_get_from_previous_op, gz_internal_buffer), err );
+            CHECK_ERR( dnnConversionExecute_%(precision)s(convert_gz_to_internal, gz_buffer, gz_internal_buffer), err );
+            pool_res[dnnResourceDiffDst] = gz_internal_buffer;
         } else {
-             gz_internal_buffer = gz_internal_buffer_get_from_previous_op;
+            pool_res[dnnResourceDiffDst] = gz_buffer;
         }
-        pool_res[dnnResourceDiffDst] = gz_internal_buffer;
-        pool_res[dnnResourceDiffSrc] = x_internal_buffer;
+        pool_res[dnnResourceDiffSrc] = gx_internal_buffer;
 
         #ifdef _MKL_DEBUG_
-            input_bytes = dnnLayoutGetMemorySize_%(precision)s(x_internal_layout);
+            input_bytes = dnnLayoutGetMemorySize_%(precision)s(x_layout);
             output_bytes = dnnLayoutGetMemorySize_%(precision)s(gz_internal_layout);
             workspace_bytes = dnnLayoutGetMemorySize_%(precision)s(workspace_internal_layout);
             std::cout << " input_bytes = " << input_bytes << std::endl;
@@ -890,35 +879,14 @@ class PoolGrad(PoolBase):
 
         CHECK_ERR( dnnExecute_%(precision)s(pPoolingBwd, (void**)pool_res), err );
 
-        #if 0
-        if (!dnnLayoutCompare_%(precision)s(x_internal_layout, x_internal_layout_get_from_previous_op)) {
-            #ifdef _MKL_DEBUG_
-                std::cout<<"pool backward, x layout is not equal" <<std::endl;
-            #endif
-            if (NULL == convert_x_to_internal) {
-                CHECK_ERR( dnnConversionCreate_%(precision)s(&convert_x_to_internal, x_internal_layout, x_internal_layout_get_from_previous_op), err );
-            }
-        }
-        if (convert_x_to_internal) {
-            if (NULL == x_internal_buffer_to_previous) {
-                CHECK_ERR( dnnAllocateBuffer_%(precision)s((void**)&x_internal_buffer_to_previous, x_internal_layout_get_from_previous_op ), err );
-            }
-            CHECK_ERR( dnnConversionExecute_%(precision)s(convert_x_to_internal, x_internal_buffer, x_internal_buffer_to_previous), err );
-         } else {
-            x_internal_buffer_to_previous = x_internal_buffer;
-        }
+        ((dnnLayout_t*)PyArray_DATA(%(gx)s))[0] = gx_internal_layout;
+        ((void**)PyArray_DATA(%(gx)s))[1] = gx_internal_buffer;
 
-        ((dnnLayout_t*)PyArray_DATA(%(gx)s))[0] = x_internal_layout_get_from_previous_op;
-        ((void**)PyArray_DATA(%(gx)s))[1] = x_internal_buffer_to_previous;
-        #endif
-        ((dnnLayout_t*)PyArray_DATA(%(gx)s))[0] = x_internal_layout;
-        ((void**)PyArray_DATA(%(gx)s))[1] = x_internal_buffer;
+        first_run = 0;
 
         #ifdef _MKL_DEBUG_
             std::cout<<"poolgrad end\\n"<<std::endl;
         #endif
-        first_run = 0;
-
         """ % sub
 
         return ccode

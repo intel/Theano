@@ -349,6 +349,7 @@ class LRNGrad(basic_ops.MKLOp):
             dnnLayout_t x_layout_previous;
             dnnLayout_t layout_internal_output;
             dnnLayout_t layout_internal_workspace;
+            dnnLayout_t gz_layout;
             void* buf_diff;
             void* buf_gz;
             void* buf_output;
@@ -370,6 +371,7 @@ class LRNGrad(basic_ops.MKLOp):
             x_layout_previous = NULL;
             layout_internal_output = NULL;
             layout_internal_workspace = NULL;
+            gz_layout = NULL;
             buf_diff = NULL;
             buf_gz = NULL;
             buf_output = NULL;
