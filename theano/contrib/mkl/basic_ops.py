@@ -1,7 +1,6 @@
 import theano.tensor as T
 from theano.gof import Apply, Op
 from theano.tensor.blas import ldflags
-from theano.gradient import DisconnectedType
 from theano.tensor.nnet.abstract_conv import get_conv_output_shape
 from theano.contrib.mkl.mkl_helper import header_text
 from theano.contrib.mkl.mkl_type import MKLNdarrayType
@@ -737,3 +736,333 @@ class U2IRelu(BaseConvertOp):
             #endif
         """ % locals()
         return ccode
+
+class U2ILRN(BaseConvertOp):
+    __props__ = ('alpha', 'beta', 'k', 'size')
+
+    def __init__(self, alpha=1e-4, beta=0.75, k=2, n=5):
+        self.alpha = alpha
+        self.beta = beta
+        self.k = k
+        self.size = n
+
+    def make_node(self, x):
+        x = T.as_tensor_variable(x)
+        if x.type.ndim != 4:
+            raise TypeError('Input should be a 4-dim variable.')
+        return Apply(self, [x], [MKLNdarrayType(broadcastable=x.type.broadcastable, dtype=x.dtype)()])
+
+    def grad(self, inp, grads):
+        x, = inp
+        gz, = grads
+
+        return [U2IGrad()(x, gz)]
+
+    def c_code(self, node, name, inp, out, sub):
+        x, = inp
+        z, = out
+
+        alpha = self.alpha
+        beta = self.beta
+        k = self.k
+        size = self.size
+
+        if 'float32' == node.inputs[0].type.dtype:
+            precision = 'F32'
+        elif 'float64' == node.inputs[0].type.dtype:
+            precision = 'F64'
+        else:
+            raise TypeError('Type %s is not supported!' % node.inputs[0].type.dtype)
+
+        fail = sub['fail']
+
+        ccode = """
+            int ndim = PyArray_NDIM(%(x)s);
+            int dtype = PyArray_TYPE(%(x)s);
+            npy_intp* d = PyArray_DIMS(%(x)s);
+
+            size_t dims[MNDA_MAX_NDIM] = {0};
+            for (int i = 0; i < ndim; i++) {
+                dims[i] = (size_t)d[i];
+            }
+
+            if (1 == first_run) {
+                bottomSize[0] = d[3]; //w
+                bottomSize[1] = d[2]; //h
+                bottomSize[2] = d[1]; //c
+                bottomSize[3] = d[0]; //n
+
+                bottomStride[0] = 1;
+                bottomStride[1] = bottomStride[0] * bottomSize[0];
+                bottomStride[2] = bottomStride[1] * bottomSize[1];
+                bottomStride[3] = bottomStride[2] * bottomSize[2];
+
+                //create user layout
+                CHECK_ERR( dnnLayoutCreate_%(precision)s(&layout_user, DIMENSION, bottomSize, bottomStride), err );
+                CHECK_ERR( dnnLRNCreateForward_%(precision)s(&primitive, NULL, layout_user, %(size)s, %(alpha)s, %(beta)s, %(k)s), err );
+            }
+
+            if (!( %(z)s
+                && MKLNdarray_Check((PyObject*)%(z)s)
+                && MKLNdarray_NDIM(%(z)s) == ndim
+                && MKLNdarray_DIMS(%(z)s)[0] == d[0]
+                && MKLNdarray_DIMS(%(z)s)[1] == d[1]
+                && MKLNdarray_DIMS(%(z)s)[2] == d[2]
+                && MKLNdarray_DIMS(%(z)s)[3] == d[3]) ) {
+
+                if (%(z)s) Py_XDECREF(%(z)s);
+                %(z)s = (MKLNdarray*)MKLNdarray_New(ndim, dtype);
+                if (!%(z)s) {
+                    %(fail)s;
+                }
+
+                int status = MKLNdarray_set_structure(%(z)s, ndim, dims);
+                if (status != 0) {
+                    %(fail)s;
+                }
+
+                status = MKLNdarray_create_buffer_from_primitive(%(z)s, &primitive, dnnResourceSrc);
+                if (status != 0) {
+                    %(fail)s;
+                }
+            }
+
+            if (!dnnLayoutCompare_%(precision)s(layout_user, MKLNdarray_LAYOUT(%(z)s))) {
+                if (NULL == to_internal) {
+                    CHECK_ERR( dnnConversionCreate_%(precision)s(&to_internal, layout_user, MKLNdarray_LAYOUT(%(z)s)), err );
+                }
+            }
+
+            if (to_internal) {
+                CHECK_ERR( dnnConversionExecute_%(precision)s(to_internal,
+                                                              PyArray_DATA(%(x)s),
+                                                              MKLNdarray_DATA(%(z)s)), err );
+            } else {
+                memcpy(MKLNdarray_DATA(%(z)s), (void*)PyArray_DATA(%(x)s), %(z)s->data_size);
+            }
+
+            first_run = 0;
+        """ % locals()
+        return ccode
+
+class U2IBatchNormalization(BaseConvertOp):
+    __props__ = ('eps',)
+
+    def __init__(self, eps=1e-5):
+        self.eps = eps
+
+    def make_node(self, x):
+        x = T.as_tensor_variable(x)
+        if x.type.ndim != 4:
+            raise TypeError('The input should be a 4-dim tensor.')
+        return Apply(self, [x], [MKLNdarrayType(broadcastable=x.type.broadcastable, dtype=x.dtype)()])
+
+    def grad(self, inp, grads):
+        x, = inp
+        gz, = grads
+        return [U2IGrad()(x, gz)]
+
+    def c_code(self, node, name, inp, out, sub):
+        x, = inp
+        z, = out
+        eps = self.eps
+
+        if 'float32' == node.inputs[0].type.dtype:
+            precision = 'F32'
+        elif 'float64' == node.inputs[0].type.dtype:
+            precision = 'F64'
+        else:
+            raise TypeError('Type %s is not supported!' % node.inputs[0].type.dtype)
+
+        fail = sub['fail']
+
+        ccode = """
+            int ndim = PyArray_NDIM(%(x)s);
+            int dtype = PyArray_TYPE(%(x)s);
+            npy_intp* d = PyArray_DIMS(%(x)s);
+
+            size_t dims[MNDA_MAX_NDIM] = {0};
+            for (int i = 0; i < ndim; i++) {
+                dims[i] = (size_t)d[i];
+            }
+
+            if (1 == first_run) {
+                bottomSize[0] = d[3]; //w
+                bottomSize[1] = d[2]; //h
+                bottomSize[2] = d[1]; //c
+                bottomSize[3] = d[0]; //n
+
+                bottomStride[0] = 1;
+                bottomStride[1] = bottomStride[0] * bottomSize[0];
+                bottomStride[2] = bottomStride[1] * bottomSize[1];
+                bottomStride[3] = bottomStride[2] * bottomSize[2];
+
+                //create user layout
+                CHECK_ERR( dnnLayoutCreate_%(precision)s(&layout_user, DIMENSION, bottomSize, bottomStride), err );
+                CHECK_ERR( dnnBatchNormalizationCreateForward_%(precision)s(&primitive, NULL, layout_user, %(eps)s), err);
+            }
+
+            if (!( %(z)s
+                && MKLNdarray_Check((PyObject*)%(z)s)
+                && MKLNdarray_NDIM(%(z)s) == ndim
+                && MKLNdarray_DIMS(%(z)s)[0] == d[0]
+                && MKLNdarray_DIMS(%(z)s)[1] == d[1]
+                && MKLNdarray_DIMS(%(z)s)[2] == d[2]
+                && MKLNdarray_DIMS(%(z)s)[3] == d[3]) ) {
+
+                if (%(z)s) Py_XDECREF(%(z)s);
+                %(z)s = (MKLNdarray*)MKLNdarray_New(ndim, dtype);
+                if (!%(z)s) {
+                    %(fail)s;
+                }
+
+                int status = MKLNdarray_set_structure(%(z)s, ndim, dims);
+                if (status != 0) {
+                    %(fail)s;
+                }
+
+                status = MKLNdarray_create_buffer_from_primitive(%(z)s, &primitive, dnnResourceSrc);
+                if (status != 0) {
+                    %(fail)s;
+                }
+            }
+
+            if (!dnnLayoutCompare_%(precision)s(layout_user, MKLNdarray_LAYOUT(%(z)s))) {
+                if (NULL == to_internal) {
+                    CHECK_ERR( dnnConversionCreate_%(precision)s(&to_internal, layout_user, MKLNdarray_LAYOUT(%(z)s)), err );
+                }
+            }
+
+            if (to_internal) {
+                CHECK_ERR( dnnConversionExecute_%(precision)s(to_internal,
+                                                              PyArray_DATA(%(x)s),
+                                                              MKLNdarray_DATA(%(z)s)), err );
+            } else {
+                memcpy(MKLNdarray_DATA(%(z)s), (void*)PyArray_DATA(%(x)s), %(z)s->data_size);
+            }
+
+            first_run = 0;
+        """ % locals()
+        return ccode
+
+class U2IElemwiseSum(BaseConvertOp):
+    __props__ = ('inp_num', 'coeff')
+
+    def __init__(self, inp_num=1, coeff=(1.0, )):
+        self.inp_num = inp_num
+        if isinstance(coeff, tuple):
+            self.coeff = coeff
+        elif isinstance(coeff, list):
+            self.coeff = tuple(coeff)
+        else:
+            raise TypeError('Coeff should be a tuple or list.')
+        if self.inp_num != len(self.coeff):
+            raise ValueError('Number of ElemwiseSum inputs is not equal to number of coefficients.')
+
+    def make_node(self, x):
+        x = T.as_tensor_variable(x)
+        if x.type.ndim != 4:
+            raise TypeError('U2IElemwiseSum inputs should be 4-dim tensor')
+        return Apply(self, [x], [MKLNdarrayType(broadcastable=x.type.broadcastable, dtype=x.dtype)()])
+
+    def grad(self, inp, grads):
+        x, = inp
+        gz, = grads
+        return [U2IGrad()(x, gz)]
+
+    def c_code(self, node, name, inp, out, sub):
+        x, = inp
+        z, = out
+        coeff = self.coeff
+        inp_num = self.inp_num
+
+        if 'float32' == node.inputs[0].type.dtype:
+            sub['type'] = 'float'
+            precision = 'F32'
+        elif 'float64' == node.inputs[0].type.dtype:
+            sub['type'] = 'double'
+            precision = 'F64'
+        else:
+            raise TypeError('Type %s is not supported!' % node.inputs[0].type.dtype)
+
+        fail = sub['fail']
+        sub['len'] = inp_num
+
+        ccode = """
+            %(type)s coeffs[%(len)s] = {1.0};
+        """ % sub
+
+        for i, co in enumerate(coeff):
+            ccode = ccode + """
+            coeffs[%s] = %s;
+            """ % (i, co)
+
+        ccode = ccode + """
+            int ndim = PyArray_NDIM(%(x)s);
+            int dtype = PyArray_TYPE(%(x)s);
+            npy_intp* d = PyArray_DIMS(%(x)s);
+
+            size_t dims[MNDA_MAX_NDIM] = {0};
+            for (int i = 0; i < ndim; i++) {
+                dims[i] = (size_t)d[i];
+            }
+
+           if (1 == first_run) {
+                bottomSize[0] = d[3]; //w
+                bottomSize[1] = d[2]; //h
+                bottomSize[2] = d[1]; //c
+                bottomSize[3] = d[0]; //n
+
+                bottomStride[0] = 1;
+                bottomStride[1] = bottomStride[0] * bottomSize[0];
+                bottomStride[2] = bottomStride[1] * bottomSize[1];
+                bottomStride[3] = bottomStride[2] * bottomSize[2];
+
+                //create user layout
+                CHECK_ERR( dnnLayoutCreate_%(precision)s(&layout_user, DIMENSION, bottomSize, bottomStride), err );
+                CHECK_ERR( dnnSumCreate_%(precision)s(&primitive, NULL, %(inp_num)s, layout_user, coeffs), err);
+            }
+
+            if (!( %(z)s
+                && MKLNdarray_Check((PyObject*)%(z)s)
+                && MKLNdarray_NDIM(%(z)s) == ndim
+                && MKLNdarray_DIMS(%(z)s)[0] == d[0]
+                && MKLNdarray_DIMS(%(z)s)[1] == d[1]
+                && MKLNdarray_DIMS(%(z)s)[2] == d[2]
+                && MKLNdarray_DIMS(%(z)s)[3] == d[3]) ) {
+
+                if (%(z)s) Py_XDECREF(%(z)s);
+                %(z)s = (MKLNdarray*)MKLNdarray_New(ndim, dtype);
+                if (!%(z)s) {
+                    %(fail)s;
+                }
+
+                int status = MKLNdarray_set_structure(%(z)s, ndim, dims);
+                if (status != 0) {
+                    %(fail)s;
+                }
+
+                status = MKLNdarray_create_buffer_from_primitive(%(z)s, &primitive, dnnResourceMultipleSrc);
+                if (status != 0) {
+                    %(fail)s;
+                }
+            }
+
+            if (!dnnLayoutCompare_%(precision)s(layout_user, MKLNdarray_LAYOUT(%(z)s))) {
+                if (NULL == to_internal) {
+                    CHECK_ERR( dnnConversionCreate_%(precision)s(&to_internal, layout_user, MKLNdarray_LAYOUT(%(z)s)), err );
+                }
+            }
+
+            if (to_internal) {
+                CHECK_ERR( dnnConversionExecute_%(precision)s(to_internal,
+                                                              PyArray_DATA(%(x)s),
+                                                              MKLNdarray_DATA(%(z)s)), err );
+            } else {
+                memcpy(MKLNdarray_DATA(%(z)s), (void*)PyArray_DATA(%(x)s), %(z)s->data_size);
+            }
+
+            first_run = 0;
+        """ % locals()
+        return ccode
+
