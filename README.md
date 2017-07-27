@@ -5,10 +5,11 @@ This repo is dedicated to improving Theano performance on CPU, especially in Int
 
 **Key Features**
   * New backend of Intel® MKL (version >= 2017.0 which includes neural network primitives)
-  * Further graph optimizations
+  * Advanced graph optimizations
   * CPU friendly OPs
   * Switch to Intel® MKL backend automatically in Intel®  Architecture
-  * Out-of-box performance improvements and good portability
+  * Out-of-box performance improvements for legacy models  
+  * Transparently supports for Keras (Lasagne, etc.) workloads 
 
 **Benchmark**
   * Hardwares
@@ -16,8 +17,8 @@ This repo is dedicated to improving Theano performance on CPU, especially in Int
     - Intel® Xeon Phi™  CPU 7250F @ 1.40GHz, 98G RAM
   * Softwares
     - Script: **[convnet-benchmarks](https://github.com/soumith/convnet-benchmarks/blob/master/theano/benchmark_imagenet.py)**
-    - **[Stock Theano](https://github.com/theano/theano)**, commit ID: 2fa3cec
-    - **[Intel Theano](https://github.com/intel/theano)**, commit ID: 00216ef, ver-1.1
+    - **[Stock Theano](https://github.com/theano/theano)**, commit ID: 2fa3ce
+    - **[Intel Theano](https://github.com/intel/theano)**, commit ID: e3f7b4, ver-1.1
   * Terminologies
     - FWD, forward for inference
     - FWD+BWD, forward and backward for training
@@ -43,14 +44,6 @@ This repo is dedicated to improving Theano performance on CPU, especially in Int
   * Add bias after convolution to archieve high performance since this sub-graph can be replaced with MKL Op
   * Use group convolution OP, [AbstractConvGroup](https://github.com/intel/Theano/blob/master/theano/sandbox/mkl/mkl_conv.py)
   * Use New MKL OP: [LRN](https://github.com/intel/Theano/blob/master/theano/tensor/nnet/lrn.py)
-  * Intel® Xeon Phi™ Environment Setting, example as below
-        
-        #!/bin/sh
-        export KMP_BLOCKTIME=1
-        export KMP_AFFINITY=verbose, granularity=core,noduplicates,compact,0,0
-        export OMP_NUM_THREADS=68
-        export MKL_DYNAMIC=false
-        python xxx.py
 
 **Branch Information**
   * master, stable and fully tested version based on 0.9dev2 with Intel® MKL backend
