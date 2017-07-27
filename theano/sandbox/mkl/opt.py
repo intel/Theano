@@ -277,7 +277,7 @@ class ReplaceConvBias(Optimizer):
                                                                                 border_mode=border_mode,
                                                                                 subsample=subsample,
                                                                                 filter_flip=filter_flip,
-                                                                                filter_dilation=filter_dilation)(image=inp_0, weight=weight, gradz=gz, bias=bias)
+                                                                                filter_dilation=filter_dilation)(image=inp_0, weight=weight, gz=gz, bias=bias)
                                         # Get BiasGrad
                                         oriBiasGrad = None  # BiasGrad in original function graph
                                         gz_node = inp[1].owner
