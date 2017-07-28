@@ -30,6 +30,8 @@ from theano.tensor.nnet.abstract_conv import (AbstractConv2d,
                                               AbstractConv2d_gradWeights,
                                               AbstractConv2d_gradInputs)
 
+import time
+
 _logger = logging.getLogger('theano.sandbox.mkl.opt')
 
 # global OPT
@@ -140,7 +142,7 @@ class ReplaceConvBias(Optimizer):
         pre_op = [tensor.DimShuffle, tensor.Elemwise, tensor.DimShuffle]
         pre_len = len(pre_op)
         for c in node.outputs[i].clients:
-            if isinstance(c[0].op, tensor.Sum):
+            if hasattr(c[0], 'op') and isinstance(c[0].op, tensor.Sum):
                 c_ = c[0]
                 for j in range(pre_len):
                     if hasattr(c_.outputs[0], 'clients'):
@@ -156,7 +158,7 @@ class ReplaceConvBias(Optimizer):
         pre_op = [tensor.DimShuffle, tensor.Reshape]
         pre_len = len(pre_op)
         for c in node.outputs[i].clients:
-            if isinstance(c[0].op, tensor.Sum):
+            if hasattr(c[0], 'op') and isinstance(c[0].op, tensor.Sum):
                 c_ = c[0]
                 for j in range(pre_len):
                     if hasattr(c_.outputs[0], 'clients'):
