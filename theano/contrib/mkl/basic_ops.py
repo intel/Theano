@@ -827,9 +827,11 @@ class U2ILRN(BaseConvertOp):
                 }
             }
 
-            if (!dnnLayoutCompare_%(precision)s(layout_user, MKLNdarray_LAYOUT(%(z)s))) {
-                if (NULL == to_internal) {
-                    CHECK_ERR( dnnConversionCreate_%(precision)s(&to_internal, layout_user, MKLNdarray_LAYOUT(%(z)s)), err );
+            if (1 == first_run) {
+                if (!dnnLayoutCompare_%(precision)s(layout_user, MKLNdarray_LAYOUT(%(z)s))) {
+                    if (NULL == to_internal) {
+                        CHECK_ERR( dnnConversionCreate_%(precision)s(&to_internal, layout_user, MKLNdarray_LAYOUT(%(z)s)), err );
+                    }
                 }
             }
 
@@ -926,10 +928,12 @@ class U2IBatchNormalization(BaseConvertOp):
                     %(fail)s;
                 }
             }
-
-            if (!dnnLayoutCompare_%(precision)s(layout_user, MKLNdarray_LAYOUT(%(z)s))) {
-                if (NULL == to_internal) {
-                    CHECK_ERR( dnnConversionCreate_%(precision)s(&to_internal, layout_user, MKLNdarray_LAYOUT(%(z)s)), err );
+            
+            if (1 == first_run) {
+                if (!dnnLayoutCompare_%(precision)s(layout_user, MKLNdarray_LAYOUT(%(z)s))) {
+                    if (NULL == to_internal) {
+                        CHECK_ERR( dnnConversionCreate_%(precision)s(&to_internal, layout_user, MKLNdarray_LAYOUT(%(z)s)), err );
+                    }
                 }
             }
 
@@ -1048,10 +1052,12 @@ class U2IElemwiseSum(BaseConvertOp):
                 }
             }
 
-            if (!dnnLayoutCompare_%(precision)s(layout_user, MKLNdarray_LAYOUT(%(z)s))) {
-                if (NULL == to_internal) {
-                    CHECK_ERR( dnnConversionCreate_%(precision)s(&to_internal, layout_user, MKLNdarray_LAYOUT(%(z)s)), err );
-                }
+            if (1 == first_run) {
+               if (!dnnLayoutCompare_%(precision)s(layout_user, MKLNdarray_LAYOUT(%(z)s))) {
+                   if (NULL == to_internal) {
+                       CHECK_ERR( dnnConversionCreate_%(precision)s(&to_internal, layout_user, MKLNdarray_LAYOUT(%(z)s)), err );
+                   }
+               }
             }
 
             if (to_internal) {

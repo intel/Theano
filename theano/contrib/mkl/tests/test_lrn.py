@@ -199,12 +199,10 @@ class test_lrn_grad(unittest.TestCase):
 
         x = tensor.dtensor4('x')
         x_internal = U2ILRN()(x)
-        print (x_internal.type)
         z_internal = mkl_lrn.LRN()(x_internal)
         z = I2U()(z_internal)
         z_sum = tensor.sum(z)
         g = tensor.grad(z_sum, [x])
-        print ("hello %s"%(x_internal.type))
         f = theano.function([x], g, mode=mode_with_mkl)
         imval = numpy.random.rand(4, 2, 4, 4).astype(theano.config.floatX)
 
