@@ -6,9 +6,9 @@ from theano.compile import optdb
 from theano.gof import (local_optimizer, Optimizer, toolbox)
 from theano.contrib.mkl import mkl_optimizer, register_opt, mkl_seqopt, mkl_available
 from theano.contrib.mkl.basic_ops import (U2IGrad, I2U, I2UGrad, U2IConv,
-                                          U2IPool, U2IRelu)
-from theano.contrib.mkl import (mkl_conv, mkl_pool, mkl_relu)
-
+                                          U2IPool, U2IRelu, U2ILRN, U2IElemwiseSum, U2IBatchNormalization)
+from theano.contrib.mkl import (mkl_conv, mkl_pool, mkl_relu, mkl_elemwise, mkl_lrn,  mkl_bn)
+from theano.tensor.basic import Join, Split
 from theano.tensor.signal import pool
 from theano.tensor.nnet.abstract_conv import (AbstractConv2d,
                                               AbstractConv2d_gradWeights,
@@ -637,3 +637,135 @@ def local_reluGrad_mkl(node):
                'Exception message: %s\n') % (node.op, str(e))
         _logger.warning(msg)
         return
+
+
+@register_opt()
+@local_optimizer([mkl_lrn.AbstractLRN])
+def local_lrn_mkl(node):
+    if not mkl_available():
+        return
+
+    if not isinstance(node.op, mkl_lrn.AbstractLRN):
+        return
+
+    if node.inputs[0].type.ndim != 4:
+        return
+
+    try:
+        x, = node.inputs
+        x_u2i = U2ILRN(alpha=node.op.alpha,
+                       beta=node.op.beta,
+                       k=node.op.k,
+                       n=node.op.n)(x)
+        lrnout = mkl_lrn.LRN(alpha=node.op.alpha,
+                             beta=node.op.beta,
+                             k=node.op.k,
+                             n=node.op.n)(x_u2i)
+        z_i2u = I2U()(lrnout)
+        rval = z_i2u
+        return [rval]
+    except Exception as e:
+        msg = ('Failed to apply local opt to Op %s. '
+               'Exception message: %s\n') % (node.op, str(e))
+        _logger.warning(msg)
+        return
+
+
+@register_opt()
+@local_optimizer([mkl_lrn.AbstractLRNGrad])
+def local_lrnGrad_mkl(node):
+    if not mkl_available():
+        return
+
+    if not isinstance(node.op, mkl_lrn.AbstractLRNGrad):
+        return
+
+    if node.inputs[0].type.ndim != 4:
+        return
+
+    try:
+        x, gz, = node.inputs
+        x_u2i = U2ILRN(alpha=node.op.alpha,
+                       beta=node.op.beta,
+                       k=node.op.k,
+                       n=node.op.n)(x)
+        lrnOut = mkl_lrn.LRN(alpha=node.op.alpha,
+                             beta=node.op.beta,
+                             k=node.op.k,
+                             n=node.op.n)(x_u2i)
+        gz_u2i = I2UGrad()(lrnOut, gz)
+        lrnGradOut = mkl_lrn.LRNGrad(alpha=node.op.alpha,
+                                     beta=node.op.beta,
+                                     k=node.op.k,
+                                     n=node.op.n)(x_u2i, gz_u2i)
+        gx_i2u = U2IGrad()(x, lrnGradOut)
+        rval = gx_i2u
+        return [rval]
+    except Exception as e:
+        msg = ('Failed to apply local opt to Op %s. '
+               'Exception message: %s\n') % (node.op, str(e))
+        _logger.warning(msg)
+        return
+
+
+@register_opt()
+@local_optimizer([mkl_bn.AbstractBatchNormalization])
+def local_bn_mkl(node):
+    if not mkl_available():
+        return
+
+    if not isinstance(node.op, mkl_bn.AbstractBatchNormalization):
+        return
+
+    if node.inputs[0].type.ndim != 4:
+        return
+
+    try:
+        x, scale, shift, = node.inputs[0:3]
+        x_u2i = U2IBatchNormalization(eps=node.op.eps)(x)
+        bn_out = mkl_bn.BatchNormalization(eps=node.op.eps,
+                                           bias=node.op.bias,
+                                           term=node.op.term)(x_u2i, scale, shift)
+        z_i2u = I2U()(bn_out)
+        rval = z_i2u
+        return [rval]
+    except Exception as e:
+        msg = ('Failed to apply local opt to Op %s. '
+               'Exception message: %s\n') % (node.op, str(e))
+        _logger.warning(msg)
+        return
+
+
+@register_opt()
+@local_optimizer([mkl_bn.AbstractBatchNormalizationGrad])
+def local_bnGrad_mkl(node):
+    if not mkl_available():
+        return
+
+    if not isinstance(node.op, mkl_bn.AbstractBatchNormalizationGrad):
+        return
+
+    if node.inputs[0].type.ndim != 4:
+        return
+
+    try:
+        x, gz, scale, shift, = node.inputs
+        x_u2i = U2IBatchNormalization(eps=node.op.eps)(x)
+        bn_out = mkl_bn.BatchNormalization(eps=node.op.eps,
+                                           bias=node.op.bias,
+                                           term=node.op.term)(x_u2i, scale, shift)
+        gz_u2i = I2UGrad()(bn_out, gz)
+        bn_GradOut = mkl_bn.BatchNormalizationGrad(eps=node.op.eps,
+                                                   bias=node.op.bias,
+                                                   term=node.op.term)(x_u2i, gz_u2i, scale, shift)
+        gx_i2u = U2IGrad()(x, bn_GradOut[0])
+        rval = [gx_i2u, bn_GradOut[1], bn_GradOut[2]]
+        return rval
+    except Exception as e:
+        msg = ('Failed to apply local opt to Op %s. '
+               'Exception message: %s\n') % (node.op, str(e))
+        _logger.warning(msg)
+        return
+
+
+
