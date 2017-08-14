@@ -424,7 +424,7 @@ class ReplaceElemwise(Optimizer):
 mkl_seqopt.register('MKL_ELEMWISE_REPLACE', ReplaceElemwise(), 30, 'fast_run', 'fast_compile', 'mkl')
 
 
-# @register_opt()
+@register_opt()
 @local_optimizer([pool.Pool])
 def local_pool_mkl(node):
     if not mkl_available():
@@ -472,7 +472,7 @@ def local_pool_mkl(node):
         return
 
 
-# @register_opt()
+@register_opt()
 @local_optimizer([pool.MaxPoolGrad, pool.AveragePoolGrad])
 def local_poolGrad_mkl(node):
     if not mkl_available():
