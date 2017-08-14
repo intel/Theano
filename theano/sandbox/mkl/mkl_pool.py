@@ -847,9 +847,7 @@ class PoolGrad(PoolBase):
         if (1 == first_run) {
             if (!dnnLayoutCompare_%(precision)s(gz_layout, gz_internal_layout)) {
                 if (NULL == convert_gz_to_internal) {
-                    printf(\"poolgrad, before creating conversion\\n\");
                     CHECK_ERR( dnnConversionCreate_%(precision)s(&convert_gz_to_internal, gz_layout, gz_internal_layout), err );
-                    printf(\"poolgrad, after creating conversion\\n\");
                  }
             }
         }
