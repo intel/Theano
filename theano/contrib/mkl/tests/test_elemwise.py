@@ -30,7 +30,7 @@ class test_mkl_elemwise(unittest.TestCase):
         c_internal = basic_ops.U2IElemwiseSum(inp_num=3, coeff=[1.0, 1.0, 1.0])(c)
 
         z_internal = mkl_elemwise.ElemwiseSum(inp_num=3, coeff=[1.0, 1.0, 1.0])(a_internal, b_internal, c_internal)
-        z = basic_ops.I2U()(z_internal)
+        z = basic_ops.MKLToNdarray()(z_internal)
         f = theano.function([a, b, c], z)
 
         ival0 = numpy.random.rand(4, 4, 4, 4).astype(numpy.float32)
@@ -41,7 +41,7 @@ class test_mkl_elemwise(unittest.TestCase):
     def test_elemwise_U2I(self):
         a = theano.tensor.ftensor4('a')
         a_internal = basic_ops.U2IElemwiseSum(inp_num=1, coeff=[1.0, ])(a)
-        a_out = basic_ops.I2U()(a_internal)
+        a_out = basic_ops.MKLToNdarray()(a_internal)
         f = theano.function([a], a_out)
         ival = numpy.random.rand(4, 4, 4, 4).astype(numpy.float32)
         assert numpy.allclose(f(ival), ival)
@@ -62,7 +62,7 @@ class test_mkl_elemwise(unittest.TestCase):
         b = theano.tensor.ftensor4('b')
 
         z = mkl_elemwise.ElemwiseSum(inp_num=2, coeff=[1.0, 1.0])(a, b)
-        z_out = basic_ops.I2U()(z)
+        z_out = basic_ops.MKLToNdarray()(z)
         f = theano.function([a, b], z_out, mode=mode_with_mkl)
         ival0 = numpy.random.rand(4, 4, 4, 4).astype(numpy.float32)
         ival1 = numpy.random.rand(4, 4, 4, 4).astype(numpy.float32)
@@ -85,7 +85,7 @@ class test_mkl_elemwise(unittest.TestCase):
         c_internal = basic_ops.U2IElemwiseSum(inp_num=n, coeff=co)(c)
         d_internal = basic_ops.U2IElemwiseSum(inp_num=n, coeff=co)(d)
         z_internal = mkl_elemwise.ElemwiseSum(inp_num=n, coeff=co)(a_internal, b_internal, c_internal, d_internal)
-        z = basic_ops.I2U()(z_internal)
+        z = basic_ops.MKLToNdarray()(z_internal)
         f = theano.function([a, b, c, d], z)
         ival0 = numpy.random.rand(4, 4, 4, 4).astype(numpy.float64)
         ival1 = numpy.random.rand(4, 4, 4, 4).astype(numpy.float64)
@@ -109,7 +109,7 @@ class test_mkl_elemwise(unittest.TestCase):
         c_internal = basic_ops.U2IElemwiseSum(inp_num=3, coeff=[1.0, 1.0, 1.0])(c)
 
         z_internal = mkl_elemwise.ElemwiseSum(inp_num=3, coeff=[1.0, 1.0, 1.0])(a_internal, b_internal, c_internal)
-        z = basic_ops.I2U()(z_internal)
+        z = basic_ops.MKLToNdarray()(z_internal)
         f = theano.function([a, b, c], z)
 
         ival0 = numpy.random.rand(4, 4, 4, 4).astype(theano.config.floatX)

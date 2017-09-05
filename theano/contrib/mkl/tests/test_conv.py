@@ -2,7 +2,7 @@ import theano
 from theano import tensor as T
 from theano.tensor.nnet import conv2d
 from theano.contrib import mkl
-from theano.contrib.mkl.basic_ops import U2IConv, I2U
+from theano.contrib.mkl.basic_ops import U2IConv, MKLToNdarray
 from theano.contrib.mkl.mkl_conv import Conv2D
 
 import unittest
@@ -27,7 +27,7 @@ class test_mkl_conv_forward(unittest.TestCase):
         images = T.dtensor4('inputs')
         a_internal = U2IConv(imshp=(12, 3, 256, 256),
                              kshp=(12, 3, 3, 3))(images)
-        out = I2U()(a_internal)
+        out = MKLToNdarray()(a_internal)
 
         fopt = theano.function([images], out, mode=mode_with_mkl)
         ival = numpy.random.rand(12, 3, 256, 256).astype(numpy.float64)
@@ -39,7 +39,7 @@ class test_mkl_conv_forward(unittest.TestCase):
 
         images_internal = U2IConv(imshp=(12, 3, 256, 256), kshp=(12, 3, 3, 3))(images)
         convOut_internal = Conv2D(imshp=(12, 3, 256, 256), kshp=(12, 3, 3, 3), filter_flip=False)(images_internal, weights)
-        convOut_user = I2U()(convOut_internal)
+        convOut_user = MKLToNdarray()(convOut_internal)
 
         ival = numpy.random.rand(12, 3, 256, 256).astype(numpy.float64)
         wval = numpy.random.rand(12, 3, 3, 3).astype(numpy.float64)
@@ -66,7 +66,7 @@ class test_mkl_conv_forward(unittest.TestCase):
             wsh = wshape[i]
             images_internal = U2IConv(imshp=ish, kshp=wsh)(images)
             convOutBias_internal = Conv2D(imshp=ish, kshp=wsh, filter_flip=False)(images_internal, weights, bias)
-            convOutBias_user = I2U()(convOutBias_internal)
+            convOutBias_user = MKLToNdarray()(convOutBias_internal)
 
             ival = numpy.random.rand(*ish).astype(numpy.float64)
             wval = numpy.random.rand(*wsh).astype(numpy.float64)
@@ -94,7 +94,7 @@ class test_mkl_conv_forward(unittest.TestCase):
         fori = theano.function(inputs=[images, weights], outputs=convOut, mode=mode_without_mkl)
 
         # No optimization for the case image shape is None
-        assert all([not isinstance(n, (Conv2D, U2IConv, I2U)) for n in fopt.maker.fgraph.toposort()])
+        assert all([not isinstance(n, (Conv2D, U2IConv, MKLToNdarray)) for n in fopt.maker.fgraph.toposort()])
         #assert str(fopt.maker.fgraph.toposort()) == str(fori.maker.fgraph.toposort())
 
 
@@ -106,7 +106,7 @@ class test_mkl_conv_backward(unittest.TestCase):
         images_internal = U2IConv(imshp=(12, 3, 256, 256), kshp=(12, 3, 3, 3))(images)
 
         convOut = Conv2D(imshp=(12, 3, 256, 256), kshp=(12, 3, 3, 3), filter_flip=False)(images_internal, weights)
-        convOut_user = I2U()(convOut)
+        convOut_user = MKLToNdarray()(convOut)
         convOutLoss = T.mean(convOut_user)
         conv_op_di = T.grad(convOutLoss, images)
         conv_op_dk = T.grad(convOutLoss, weights)
@@ -146,7 +146,7 @@ class test_mkl_conv_backward(unittest.TestCase):
 
             images_internal = U2IConv(imshp=ish, kshp=wsh)(images)
             convOut = Conv2D(imshp=ish, kshp=wsh, filter_flip=False)(images_internal, weights, bias)
-            convOut_user = I2U()(convOut)
+            convOut_user = MKLToNdarray()(convOut)
             convOutLoss = T.mean(convOut_user)
             conv_op_di = theano.grad(convOutLoss, images)
             conv_op_dk = theano.grad(convOutLoss, weights)

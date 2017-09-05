@@ -2,6 +2,7 @@ import theano.tensor as T
 from theano.gof import Apply, Op
 from theano.tensor.blas import ldflags
 from theano.tensor.nnet.abstract_conv import get_conv_output_shape
+from theano.gradient import DisconnectedType 
 from theano.contrib.mkl.mkl_helper import header_text
 from theano.contrib.mkl.mkl_type import MKLNdarrayType
 
@@ -72,7 +73,7 @@ class BaseConvertOp(MKLOp):
         return (1, 0)
 
 
-class I2U(BaseConvertOp):
+class MKLToNdarray(BaseConvertOp):
     __props__ = ()
 
     def make_node(self, x):
@@ -101,84 +102,6 @@ class I2U(BaseConvertOp):
             }
         """ % locals()
 
-        return ccode
-
-
-class U2IGrad(BaseConvertOp):
-    __props__ = ()
-
-    def make_node(self, x, gz):
-        out = x.type()
-        return Apply(self, [x, gz], [out])
-
-    def c_code(self, node, name, inp, out, sub):
-        x, gz, = inp
-        z, = out
-        sub['x'] = x
-        sub['gz'] = gz
-        sub['z'] = z
-        sub['name'] = U2IGrad.__name__
-        if 'float32' == node.inputs[0].type.dtype:
-            sub['precision'] = "F32"
-            sub['x_item_size'] = 4
-        elif "float64" == node.inputs[0].type.dtype:
-            sub['precision'] = "F64"
-            sub['x_item_size'] = 8
-        else:
-            raise TypeError("Type %s not implemented" %
-                            node.inputs[0].type.dtype)
-        ccode = """
-        if(NULL == %(z)s) {
-            npy_intp dims[4] = {0};
-            dims[0] = MKLNdarray_DIMS(%(gz)s)[0];
-            dims[1] = MKLNdarray_DIMS(%(gz)s)[1];
-            dims[2] = MKLNdarray_DIMS(%(gz)s)[2];
-            dims[3] = MKLNdarray_DIMS(%(gz)s)[3];
-
-            %(z)s = (PyArrayObject*)PyArray_ZEROS(MKLNdarray_NDIM(%(gz)s),
-                                                  dims,
-                                                  MKLNdarray_TYPE(%(gz)s),
-                                                  0);
-            if(NULL == %(z)s) {
-                %(fail)s;
-            }
-        }
-
-        //create usr layerout
-        if (1 == first_run) {
-            size_t z_size[4] = {0};
-            size_t z_stride[4] = {0};
-            int ndim = (int)MKLNdarray_NDIM(%(gz)s);
-            assert(ndim == DIMENSION);
-
-            for(int i=0; i<DIMENSION; i++) {
-                z_size[i] = (size_t)PyArray_DIMS(%(z)s)[ndim-i-1];
-                z_stride[i] = (size_t)PyArray_STRIDES(%(z)s)[ndim-i-1] / %(x_item_size)s;
-            }
-
-            CHECK_ERR( dnnLayoutCreate_%(precision)s(&layout_user,
-                                                     ndim,
-                                                     z_size,
-                                                     z_stride), err);
-
-            if (!dnnLayoutCompare_%(precision)s(MKLNdarray_LAYOUT(%(gz)s), layout_user)) {
-                CHECK_ERR( dnnConversionCreate_%(precision)s(&from_internal,
-                                                             MKLNdarray_LAYOUT(%(gz)s),
-                                                             layout_user), err);
-            } else {
-                from_internal = NULL;
-            }
-        }
-
-        if (from_internal) {
-            CHECK_ERR( dnnConversionExecute_%(precision)s(from_internal,
-                                                          MKLNdarray_DATA(%(gz)s),
-                                                          PyArray_DATA(%(z)s)), err);
-        } else {
-            memcpy ((void*)PyArray_DATA(%(z)s), MKLNdarray_DATA(%(gz)s), PyArray_SIZE(%(z)s)*PyArray_ITEMSIZE(%(z)s));
-        }
-        first_run = 0;
-        """ % sub
         return ccode
 
 
@@ -300,7 +223,7 @@ class U2IConv(BaseConvertOp):
     def grad(self, inp, grads):
         x, = inp
         gz, = grads
-        return [U2IGrad()(x, gz)]
+        return [MKLToNdarray()(gz)]
 
     def c_code(self, node, name, inp, out, sub):
         x, = inp
@@ -500,7 +423,7 @@ class U2IPool(BaseConvertOp):
         gz, = grads
         disc = [DisconnectedType()() for i in inp[1:]]
 
-        return [U2IGrad()(x, gz)] + disc
+        return [MKLToNdarray()(gz)] + disc
 
     def c_code(self, node, name, inp, out, sub):
         x, ws, stride, pad = inp
@@ -651,7 +574,7 @@ class U2IRelu(BaseConvertOp):
         x, = inp
         gz, = grads
 
-        return [U2IGrad()(x, gz)]
+        return [MKLToNdarray()(gz)]
 
     def c_code(self, node, name, inp, out, sub):
         x, = inp
@@ -756,7 +679,7 @@ class U2ILRN(BaseConvertOp):
         x, = inp
         gz, = grads
 
-        return [U2IGrad()(x, gz)]
+        return [MKLToNdarray()(gz)]
 
     def c_code(self, node, name, inp, out, sub):
         x, = inp
@@ -862,7 +785,7 @@ class U2IBatchNormalization(BaseConvertOp):
     def grad(self, inp, grads):
         x, = inp
         gz, = grads
-        return [U2IGrad()(x, gz)]
+        return [MKLToNdarray()(gz)]
 
     def c_code(self, node, name, inp, out, sub):
         x, = inp
@@ -972,7 +895,7 @@ class U2IElemwiseSum(BaseConvertOp):
     def grad(self, inp, grads):
         x, = inp
         gz, = grads
-        return [U2IGrad()(x, gz)]
+        return [MKLToNdarray()(gz)]
 
     def c_code(self, node, name, inp, out, sub):
         x, = inp

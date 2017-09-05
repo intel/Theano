@@ -10,7 +10,7 @@ from theano import function
 from theano.tests import unittest_tools as utt
 from theano.contrib import mkl
 from theano.contrib.mkl.mkl_relu import Relu
-from theano.contrib.mkl.basic_ops import (U2IRelu, I2U)
+from theano.contrib.mkl.basic_ops import (U2IRelu, MKLToNdarray)
 
 if not mkl.mkl_available:
     raise SkipTest('Optional package MKL disabled')
@@ -24,14 +24,14 @@ class TestMKLRelu(unittest.TestCase):
 
             x_internal = U2IRelu()(x)
             reluOut = Relu()(x_internal)
-            output = I2U()(reluOut)
+            output = MKLToNdarray()(reluOut)
         elif len(inputs) == 3:
             # self, image, slope
             _, x, slope, = inputs
 
             x_internal = U2IRelu(slope=slope)(x)
             reluOut = Relu(slope=slope)(x_internal)
-            output = I2U()(reluOut)
+            output = MKLToNdarray()(reluOut)
         else:
             raise ValueError("incorrect inputs list, should be 2 ~ 3 parameters!")
 

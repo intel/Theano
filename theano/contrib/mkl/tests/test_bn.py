@@ -4,7 +4,7 @@ import numpy
 from nose.plugins.skip import SkipTest
 from theano import tensor as T
 from theano.contrib import mkl
-from theano.contrib.mkl.basic_ops import U2IBatchNormalization, I2U
+from theano.contrib.mkl.basic_ops import U2IBatchNormalization, MKLToNdarray
 from theano.contrib.mkl import mkl_bn
 
 numpy.random.seed(123)
@@ -23,7 +23,7 @@ class test_mkl_bn_forward(unittest.TestCase):
     def test_bn_U2I(self):
         x = T.ftensor4('x')
         x_internal = U2IBatchNormalization(eps=1e-5)(x)
-        x_out = I2U()(x_internal)
+        x_out = MKLToNdarray()(x_internal)
 
         fopt = theano.function([x], x_out, mode=with_mkl)
         ival = numpy.random.rand(64, 5, 128, 128).astype(numpy.float32)
@@ -46,7 +46,7 @@ class test_mkl_bn_forward(unittest.TestCase):
 
         x_internal = U2IBatchNormalization(eps=0)(X)
         z_bn = mkl_bn.BatchNormalization(eps=0, bias=1, term=1)(x_internal, Scale, Shift)
-        z_out = I2U()(z_bn)
+        z_out = MKLToNdarray()(z_bn)
         f = theano.function([X, Scale, Shift], z_out, mode=with_mkl)
 
         ival = numpy.random.rand(16, 3, 4, 4).astype(numpy.float32)
@@ -77,7 +77,7 @@ class test_mkl_bn_backward(unittest.TestCase):
 
         x_internal = U2IBatchNormalization(eps=1e-4)(X)
         z_bn = mkl_bn.BatchNormalization(eps=1e-4, bias=1, term=1)(x_internal, Scale, Shift)
-        z_out = I2U()(z_bn)
+        z_out = MKLToNdarray()(z_bn)
         z_sum = T.sum(z_out)
         z_grad = T.grad(z_sum, [X])
 

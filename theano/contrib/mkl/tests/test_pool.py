@@ -12,11 +12,12 @@ import math
 import theano
 import theano.tensor as T
 from theano.tests import unittest_tools as utt
+from theano.gradient import DisconnectedType
 
 from theano import function
 from theano.contrib import mkl
 from theano.contrib.mkl.mkl_pool import Pool
-from theano.contrib.mkl.basic_ops import (U2IPool, I2U)
+from theano.contrib.mkl.basic_ops import (U2IPool, MKLToNdarray)
 
 if not mkl.mkl_available:
     raise SkipTest('Optional package MKL disabled')
@@ -200,7 +201,7 @@ class TestMKLPool(unittest.TestCase):
                                  mode=mode)(images, ds)
             poolOut = Pool(ignore_border=ignore_border,
                            mode=mode)(x_internal, ds)
-            output = I2U()(poolOut)
+            output = MKLToNdarray()(poolOut)
         elif len(inputs) == 6:
             # self, images, ignore_border, mode, ds, st,
             _, images, ignore_border, mode, ds, st, = inputs
@@ -208,7 +209,7 @@ class TestMKLPool(unittest.TestCase):
                                  mode=mode)(images, ds, st)
             poolOut = Pool(ignore_border=ignore_border,
                            mode=mode)(x_internal, ds, st)
-            output = I2U()(poolOut)
+            output = MKLToNdarray()(poolOut)
         elif len(inputs) == 7:
             # self, images, ignore_border, mode, ds, st, pad
             _, images, ignore_border, mode, ds, st, pad = inputs
@@ -216,7 +217,7 @@ class TestMKLPool(unittest.TestCase):
                                  mode=mode)(images, ds, st, pad)
             poolOut = Pool(ignore_border=ignore_border,
                            mode=mode)(x_internal, ds, st, pad)
-            output = I2U()(poolOut)
+            output = MKLToNdarray()(poolOut)
         else:
             raise ValueError("incorrect inputs list, should be 4 ~ 6 parameters!")
 

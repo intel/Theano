@@ -8,7 +8,7 @@ import theano.tensor as tensor
 
 import theano.contrib.mkl as mkl
 from theano.contrib.mkl import mkl_lrn
-from theano.contrib.mkl.basic_ops import U2ILRN, I2U, U2IGrad, I2UGrad
+from theano.contrib.mkl.basic_ops import U2ILRN, MKLToNdarray, I2UGrad
 
 
 if not mkl.mkl_available:
@@ -69,7 +69,7 @@ class test_mkl_lrn(unittest.TestCase):
         x = tensor.dtensor4('x')
         x_internal = U2ILRN()(x)
         z_internal = mkl_lrn.LRN(alpha, beta, k, n)(x_internal)
-        z = I2U()(z_internal)
+        z = MKLToNdarray()(z_internal)
 
         fz = theano.function([x], z, mode=mode_with_mkl)
         # for shape[0]
@@ -102,7 +102,7 @@ class test_mkl_lrn(unittest.TestCase):
         x = tensor.ftensor4('x')
         x_internal = U2ILRN()(x)
         z_internal = mkl_lrn.LRN()(x_internal)
-        z = I2U()(z_internal)
+        z = MKLToNdarray()(z_internal)
 
         f = theano.function([x], z, mode=mode_with_mkl)
         imval = numpy.random.rand(4, 2, 4, 4).astype(theano.config.floatX)
@@ -119,7 +119,7 @@ class test_mkl_lrn(unittest.TestCase):
         x = tensor.dtensor4('x')
         x_internal = U2ILRN()(x)
         z_internal = mkl_lrn.LRN()(x_internal)
-        z = I2U()(z_internal)
+        z = MKLToNdarray()(z_internal)
 
         f = theano.function([x], z, mode=mode_with_mkl)
         imval = numpy.random.rand(4, 2, 4, 4).astype(theano.config.floatX)
@@ -161,7 +161,7 @@ class test_mkl_lrn(unittest.TestCase):
         assert len(topo) == 3
         assert isinstance(topo[0].op, U2ILRN)
         assert isinstance(topo[1].op, mkl_lrn.LRN)
-        assert isinstance(topo[2].op, I2U)
+        assert isinstance(topo[2].op, MKLToNdarray)
 
 class test_lrn_grad(unittest.TestCase):
     def test_lrn_grad_wrong_dim(self):
@@ -181,7 +181,7 @@ class test_lrn_grad(unittest.TestCase):
         x = tensor.ftensor4('x')
         x_internal = U2ILRN()(x)
         z_internal = mkl_lrn.LRN()(x_internal)
-        z = I2U()(z_internal)
+        z = MKLToNdarray()(z_internal)
         z_sum = tensor.sum(z)
         g = tensor.grad(z_sum, [x])
 
@@ -200,7 +200,7 @@ class test_lrn_grad(unittest.TestCase):
         x = tensor.dtensor4('x')
         x_internal = U2ILRN()(x)
         z_internal = mkl_lrn.LRN()(x_internal)
-        z = I2U()(z_internal)
+        z = MKLToNdarray()(z_internal)
         z_sum = tensor.sum(z)
         g = tensor.grad(z_sum, [x])
         f = theano.function([x], g, mode=mode_with_mkl)
@@ -248,10 +248,10 @@ class test_lrn_grad(unittest.TestCase):
 
         assert isinstance(topo[0].op, U2ILRN)
         assert isinstance(topo[1].op, mkl_lrn.LRN)
-        assert isinstance(topo[2].op, I2U)
+        assert isinstance(topo[2].op, MKLToNdarray)
         assert isinstance(topo[8].op, I2UGrad)
         assert isinstance(topo[9].op, mkl_lrn.LRNGrad)
-        assert isinstance(topo[10].op, U2IGrad)
+        assert isinstance(topo[10].op, MKLToNdarray)
 
 if __name__ == '__main__':
     unittest.main()
