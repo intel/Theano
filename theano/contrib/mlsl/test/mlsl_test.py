@@ -4,7 +4,7 @@ from ctypes import c_void_p
 import mlsl
 import theano
 import theano.tensor as T
-from theano.mlsl_api import AllReduce, addr
+from theano.contrib.mlsl.mlsl_api import AllReduce, addr
 '''
 def addr(x):
     xaddr, offset = x.ctypes.data_as(c_void_p), 0
