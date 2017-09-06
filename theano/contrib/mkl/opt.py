@@ -5,9 +5,8 @@ from theano import gof, tensor, scalar
 from theano.compile import optdb
 from theano.gof import (local_optimizer, Optimizer, toolbox)
 from theano.contrib.mkl import mkl_optimizer, register_opt, mkl_seqopt, mkl_available
-from theano.contrib.mkl.basic_ops import (MKLToNdarray, I2UGrad, U2IConv,
-                                          U2IPool, U2IRelu, U2ILRN, U2IElemwiseSum, U2IBatchNormalization)
-from theano.contrib.mkl import (mkl_conv, mkl_pool, mkl_relu, mkl_elemwise, mkl_lrn,  mkl_bn)
+from theano.contrib.mkl.basic_ops import (NdarrayToMKL, MKLToNdarray, ndarray_to_mkl, mkl_to_ndarray)
+from theano.contrib.mkl import (mkl_conv, mkl_pool, mkl_relu, mkl_elemwise, mkl_lrn, mkl_bn)
 from theano.tensor.basic import Join, Split
 from theano.tensor.signal import pool
 from theano.tensor.nnet.abstract_conv import (AbstractConv2d,
@@ -29,7 +28,7 @@ mkl_seqopt.register('mkl_local_optimizations', mkl_optimizer, 20,
 class CutMKLDataConversionChain(Optimizer):
     """
     This global optimizer used to cut the unless data layout transfer from user layout to MKL-DNN internal layout
-    from function graph, such as MKLToNdarray + U2IConv.
+    from function graph, such as MKLToNdarray + NdarrayToMKL.
     """
     def __init__(self):
         Optimizer.__init__(self)
@@ -46,13 +45,7 @@ class CutMKLDataConversionChain(Optimizer):
                         'BatchNormalization',
                         'Concatenate']
         list_i2u = ['MKLToNdarray']
-        list_u2i = ['U2IPool',
-                    'U2IRelu',
-                    'U2IConv',
-                    'U2IElemwiseSum',
-                    'U2ILRN',
-                    'U2IBatchNormalization',
-                    'U2IConcatenate']
+        list_u2i = ['NdarrayToMKL']
         list_backward = ['ReluGrad',
                          'PoolGrad',
                          'ConvGradInputs',
@@ -61,7 +54,7 @@ class CutMKLDataConversionChain(Optimizer):
                          'ElemwiseSum',
                          'BatchNormalizationGrad',
                          'ConcatenateGrad']
-        list_i2u_back = ['I2UGrad', 'U2IElemwiseSum']
+        list_i2u_back = ['NdarrayTOMKL']
         list_u2i_back = ['MKLToNdarray']
         try:
             for node in fgraph.toposort():
@@ -98,7 +91,7 @@ mkl_seqopt.register('CutMKLDataConversionChain', CutMKLDataConversionChain(),
                     'fast_compile',
                     'mkl')
 
-
+'''
 class ReplaceConvBias(Optimizer):
     """
     This global optimizer looks for the pattern AbstractConv2d + Bias in funtion graph.
@@ -326,7 +319,7 @@ class ReplaceConvBias(Optimizer):
 
 # Register the instance of global OPT ReplaceConvBias into mkl_seqopt.
 mkl_seqopt.register('MKL_CONV_REPLACE', ReplaceConvBias(), 0.095, 'fast_run', 'fast_compile', 'mkl')
-
+'''
 
 @local_optimizer([AbstractConv2d])
 def local_Conv2D_mkl(node):
@@ -347,18 +340,14 @@ def local_Conv2D_mkl(node):
 
     try:
         image, weight = node.inputs
-        image_internal = U2IConv(imshp=node.op.imshp,
-                                 kshp=node.op.kshp,
-                                 subsample=node.op.subsample,
-                                 border_mode=node.op.border_mode,
-                                 filter_dilation=node.op.filter_dilation)(image)
+        image_internal = ndarray_to_mkl(image)
         convOut = mkl_conv.Conv2D(imshp=node.op.imshp,
                                   kshp=node.op.kshp,
                                   border_mode=node.op.border_mode,
                                   subsample=node.op.subsample,
                                   filter_flip=node.op.filter_flip,
                                   filter_dilation=node.op.filter_dilation)(image_internal, weight)
-        z_user = MKLToNdarray()(convOut)
+        z_user = mkl_to_ndarray(convOut)
         reval = z_user
         return [reval]
     except Exception as e:
@@ -388,23 +377,13 @@ def local_ConvGradInputs_mkl(node):
     try:
         weight, gz, zshp = node.inputs
         image = node.inputs[2].owner.inputs[0].owner.inputs[0]
-        image_internal = U2IConv(imshp=node.op.imshp,
-                                 kshp=node.op.kshp,
-                                 subsample=node.op.subsample,
-                                 border_mode=node.op.border_mode,
-                                 filter_dilation=node.op.filter_dilation)(image)
-        convOut = mkl_conv.Conv2D(imshp=node.op.imshp,
-                                  kshp=node.op.kshp,
-                                  border_mode=node.op.border_mode,
-                                  subsample=node.op.subsample,
-                                  filter_flip=node.op.filter_flip,
-                                  filter_dilation=node.op.filter_dilation)(image_internal, weight)
-        gz_internal = I2UGrad()(convOut, gz)
+        image_internal = ndarray_to_mkl(image)
+        gz_internal = ndarray_to_mkl(gz)
         gradImage = mkl_conv.ConvGradInputs(border_mode=node.op.border_mode,
                                             subsample=node.op.subsample,
                                             imshp=node.op.imshp,
                                             kshp=node.op.kshp)(image_internal, weight, gz_internal)
-        gradImage_user = MKLToNdarray()(gradImage)
+        gradImage_user = mkl_to_ndarray(gradImage)
         rval = gradImage_user
         return [rval]
     except Exception as e:
@@ -435,18 +414,8 @@ def local_ConvGradWeights_mkl(node):
     try:
         image, gz, zshp = node.inputs
         weight = node.inputs[2].owner.inputs[0].owner.inputs[0]
-        image_internal = U2IConv(imshp=node.op.imshp,
-                                 kshp=node.op.kshp,
-                                 subsample=node.op.subsample,
-                                 border_mode=node.op.border_mode,
-                                 filter_dilation=node.op.filter_dilation)(image)
-        convOut = mkl_conv.Conv2D(imshp=node.op.imshp,
-                                  kshp=node.op.kshp,
-                                  border_mode=node.op.border_mode,
-                                  subsample=node.op.subsample,
-                                  filter_flip=node.op.filter_flip,
-                                  filter_dilation=node.op.filter_dilation)(image_internal, weight)
-        gz_internal = I2UGrad()(convOut, gz)
+        image_internal = ndarray_to_mkl(image)
+        gz_internal = ndarray_to_mkl(gz)
         gradWeight = mkl_conv.ConvGradWeights(border_mode=node.op.border_mode,
                                               subsample=node.op.subsample,
                                               imshp=node.op.imshp,
@@ -505,14 +474,10 @@ def local_pool_mkl(node):
         stride = ws
 
     try:
-        x_internal = U2IPool(ignore_border=node.op.ignore_border,
-                             mode=node.op.mode)(x, ws, stride, pad)
-
+        x_internal = ndarray_to_mkl(x)
         poolOut = mkl_pool.Pool(ignore_border=node.op.ignore_border,
                                 mode=node.op.mode)(x_internal, ws, stride, pad)
-
-        z_user = MKLToNdarray()(poolOut)
-
+        z_user = mkl_to_ndarray(poolOut)
         rval = z_user
         return [rval]
     except Exception as e:
@@ -557,19 +522,11 @@ def local_poolGrad_mkl(node):
         stride = ws
 
     try:
-        x_internal = U2IPool(ignore_border=node.op.ignore_border,
-                             mode=node.op.mode)(x, ws, stride, pad)
-
-        poolOut = mkl_pool.Pool(ignore_border=node.op.ignore_border,
-                                mode=node.op.mode)(x_internal, ws, stride, pad)
-
-        gz_internal = I2UGrad()(poolOut, gz)
-
+        x_internal = ndarray_to_mkl(x)
+        gz_internal = ndarray_to_mkl(gz)
         poolGradOut = mkl_pool.PoolGrad(ignore_border=node.op.ignore_border,
                                         mode=node.op.mode)(x_internal, gz_internal, ws, stride, pad)
-
-        gx_user = MKLToNdarray()(poolGradOut)
-
+        gx_user = mkl_to_ndarray(poolGradOut)
         rval = gx_user
         return [rval]
     except Exception as e:
@@ -594,10 +551,9 @@ def local_relu_mkl(node):
     x, = node.inputs
 
     try:
-        x_internal = U2IRelu(slope=node.op.slope)(x)
+        x_internal = ndarray_to_mkl(x)
         reluOut = mkl_relu.Relu(slope=node.op.slope)(x_internal)
-        z_user = MKLToNdarray()(reluOut)
-
+        z_user = mkl_to_ndarray(reluOut)
         rval = z_user
         return [rval]
     except Exception as e:
@@ -622,14 +578,10 @@ def local_reluGrad_mkl(node):
     x, gz = node.inputs
 
     try:
-        x_internal = U2IRelu(slope=node.op.slope)(x)
-        reluOut = mkl_relu.Relu(slope=node.op.slope)(x_internal)
-        gz_internal = I2UGrad()(reluOut, gz)
-
+        x_internal = ndarray_to_mkl(x)
+        gz_internal = ndarray_to_mkl(gz)
         reluGradOut = mkl_relu.ReluGrad(slope=node.op.slope)(x_internal, gz_internal)
-
-        gx_user = MKLToNdarray()(reluGradOut)
-
+        gx_user = mkl_to_ndarray(reluGradOut)
         rval = gx_user
         return [rval]
     except Exception as e:
@@ -653,15 +605,12 @@ def local_lrn_mkl(node):
 
     try:
         x, = node.inputs
-        x_u2i = U2ILRN(alpha=node.op.alpha,
-                       beta=node.op.beta,
-                       k=node.op.k,
-                       n=node.op.n)(x)
+        x_u2i = ndarray_to_mkl(x)
         lrnout = mkl_lrn.LRN(alpha=node.op.alpha,
                              beta=node.op.beta,
                              k=node.op.k,
                              n=node.op.n)(x_u2i)
-        z_i2u = MKLToNdarray()(lrnout)
+        z_i2u = mkl_to_ndarray(lrnout)
         rval = z_i2u
         return [rval]
     except Exception as e:
@@ -685,20 +634,13 @@ def local_lrnGrad_mkl(node):
 
     try:
         x, gz, = node.inputs
-        x_u2i = U2ILRN(alpha=node.op.alpha,
-                       beta=node.op.beta,
-                       k=node.op.k,
-                       n=node.op.n)(x)
-        lrnOut = mkl_lrn.LRN(alpha=node.op.alpha,
-                             beta=node.op.beta,
-                             k=node.op.k,
-                             n=node.op.n)(x_u2i)
-        gz_u2i = I2UGrad()(lrnOut, gz)
+        x_u2i = ndarray_to_mkl(x)
+        gz_u2i = ndarray_to_mkl(gz)
         lrnGradOut = mkl_lrn.LRNGrad(alpha=node.op.alpha,
                                      beta=node.op.beta,
                                      k=node.op.k,
                                      n=node.op.n)(x_u2i, gz_u2i)
-        gx_i2u = MKLToNdarray()(lrnGradOut)
+        gx_i2u = mkl_to_ndarray(lrnGradOut)
         rval = gx_i2u
         return [rval]
     except Exception as e:
@@ -722,11 +664,11 @@ def local_bn_mkl(node):
 
     try:
         x, scale, shift, = node.inputs[0:3]
-        x_u2i = U2IBatchNormalization(eps=node.op.eps)(x)
+        x_u2i = ndarray_to_mkl(x)
         bn_out = mkl_bn.BatchNormalization(eps=node.op.eps,
                                            bias=node.op.bias,
                                            term=node.op.term)(x_u2i, scale, shift)
-        z_i2u = MKLToNdarray()(bn_out)
+        z_i2u = mkl_to_ndarray(bn_out)
         rval = z_i2u
         return [rval]
     except Exception as e:
@@ -750,15 +692,12 @@ def local_bnGrad_mkl(node):
 
     try:
         x, gz, scale, shift, = node.inputs
-        x_u2i = U2IBatchNormalization(eps=node.op.eps)(x)
-        bn_out = mkl_bn.BatchNormalization(eps=node.op.eps,
-                                           bias=node.op.bias,
-                                           term=node.op.term)(x_u2i, scale, shift)
-        gz_u2i = I2UGrad()(bn_out, gz)
+        x_u2i = ndarray_to_mkl(x)
+        gz_u2i = ndarray_to_mkl(gz)
         bn_GradOut = mkl_bn.BatchNormalizationGrad(eps=node.op.eps,
                                                    bias=node.op.bias,
                                                    term=node.op.term)(x_u2i, gz_u2i, scale, shift)
-        gx_i2u = MKLToNdarray()(bn_GradOut[0])
+        gx_i2u = mkl_to_ndarray(bn_GradOut[0])
         rval = [gx_i2u, bn_GradOut[1], bn_GradOut[2]]
         return rval
     except Exception as e:
@@ -766,6 +705,3 @@ def local_bnGrad_mkl(node):
                'Exception message: %s\n') % (node.op, str(e))
         _logger.warning(msg)
         return
-
-
-

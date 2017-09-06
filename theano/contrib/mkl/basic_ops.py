@@ -45,7 +45,7 @@ class NdarrayToMKL(MKLOp):
 
     def grad(self, inp, grads):
         gz, = grads,
-        ##gz = as_mkl_variable(gz)
+        ##gz = as_mkl_ndarray_variable(gz)
 
         return [mkl_to_ndarray(gz)]
 
@@ -87,7 +87,7 @@ class MKLToNdarray(MKLOp):
     __props__ = ()
 
     def make_node(self, x):
-        ##x = as_mkl_variable(x)
+        ##x = as_mkl_ndarray_variable(x)
         out = T.TensorType(broadcastable=x.broadcastable, dtype=x.dtype)()
 
         return Apply(self, [x], [out])
