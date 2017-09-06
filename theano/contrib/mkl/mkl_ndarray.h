@@ -77,6 +77,7 @@ typedef struct __MKLNdarray__{
 MOD_PUBLIC int MKLNdarray_Check(const PyObject* ob);
 MOD_PUBLIC PyObject* MKLNdarray_New(int nd, int typenum);
 MOD_PUBLIC int MKLNdarray_CopyFromArray(MKLNdarray* self, PyArrayObject* obj);
+MOD_PUBLIC int MKLNdarray_ViewFromArray(MKLNdarray* self, PyArrayObject* obj);
 MOD_PUBLIC int MKLNdarray_set_structure(MKLNdarray* self, int nd, const size_t* dims);
 MOD_PUBLIC PyObject* MKLNdarray_CreateArrayObj(MKLNdarray* self);
 

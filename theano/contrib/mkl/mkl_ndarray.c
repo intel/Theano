@@ -888,6 +888,96 @@ int MKLNdarray_CopyFromArray(MKLNdarray *self, PyArrayObject *obj) {
 }
 
 
+int MKLNdarray_ViewFromArray(MKLNdarray *self, PyArrayObject *obj) {
+    if (NULL == self || NULL == obj) {
+        PyErr_SetString(PyExc_RuntimeError,
+                        "MKLNdarray_ViewFromArray: input self or obj is NULL");
+        return -1;
+    }
+
+    if (self->base || self->private_layout || self->private_data) {
+        PyErr_Format(PyExc_RuntimeError,
+                     "MKLNdarray_ViewFromArray:\
+                     MKLNdarray base, layout or buffer have been allocated for %p \n", self);
+        return -1;
+    }
+
+    int ndim = PyArray_NDIM(obj);
+    npy_intp* d = PyArray_DIMS(obj);
+    int typenum = PyArray_TYPE(obj);
+
+    if (NPY_FLOAT32 != typenum && NPY_FLOAT64 != typenum) {
+        PyErr_SetString(PyExc_TypeError,
+                        "MKLNdarray_ViewromArray: can only copy from float/double arrays");
+        return -1;
+    }
+
+    if (ndim < 0 || ndim > MNDA_MAX_NDIM) {
+        PyErr_Format(PyExc_ValueError,
+                     "MKLNdarray does not support a %d-dim array. Try array which ndim is <= %d",
+                     ndim, MNDA_MAX_NDIM);
+        return -1;
+    }
+
+    self->dtype = typenum;
+    self->nd = ndim;
+
+    size_t dims[MNDA_MAX_NDIM] = {0};
+    for (int i = 0; i < ndim; i++) {
+        dims[i] = (size_t)d[i];
+    }
+
+    int err = MKLNdarray_set_structure(self, ndim, dims);
+    if (err < 0) {
+        return err;
+    }
+
+    size_t mkl_size[MNDA_MAX_NDIM] = {0};
+    size_t mkl_stride[MNDA_MAX_NDIM] = {0};
+    for (int i = 0; i < self->nd; i++) {
+        mkl_size[i] = (MKLNdarray_DIMS(self))[self->nd - i - 1];
+        mkl_stride[i] = (MKLNdarray_STRIDES(self))[self->nd - i -1];
+    }
+
+    // prepare user layout
+    if (MNDA_FLOAT64 == self->dtype) {
+        int status = dnnLayoutCreate_F64(&(self->private_layout),
+                                         ndim,
+                                         mkl_size,
+                                         mkl_stride);
+        if (E_SUCCESS != status || NULL == self->private_layout) {
+            PyErr_Format(PyExc_RuntimeError,
+                         "MKLNdarray_ViewFromArray: Call dnnLayoutCreate_F64 failed: %d",
+                         status);
+            return -1;
+        }
+
+        self->data_size = dnnLayoutGetMemorySize_F64(self->private_layout);
+    } else {  // float32
+        int status = dnnLayoutCreate_F32(&(self->private_layout),
+                                         ndim,
+                                         mkl_size,
+                                         mkl_stride);
+        if (E_SUCCESS != status || NULL == self->private_layout) {
+            PyErr_Format(PyExc_RuntimeError,
+                         "MKLNdarray_ViewFromArray: Call dnnLayoutCreate_F32 failed: %d",
+                         status);
+            return -1;
+        }
+
+        self->data_size = dnnLayoutGetMemorySize_F32(self->private_layout);
+    }
+
+    //set base to Ndarray
+    self->base = (PyObject *)obj;
+    Py_INCREF(obj);
+
+    // pointer to Ndarry's buffer
+    self->private_data = PyArray_DATA(obj);
+
+    return 0;
+}
+
 /*
  * Create a MKLNdarray object according to input dims and typenum.
  *
