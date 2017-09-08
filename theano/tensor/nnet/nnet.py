@@ -384,7 +384,7 @@ class SoftmaxGrad(gof.OpenMPOp):
             }
         }
 
-        #pragma omp parallel for schedule(static, 32)
+        #pragma omp parallel for 
         for (size_t i = 0; i < PyArray_DIMS(%(dx)s)[0]; ++i)
         {
             const dtype_%(dy)s* __restrict__ dy_i = (dtype_%(dy)s*) (PyArray_BYTES(%(dy)s) + PyArray_STRIDES(%(dy)s)[0] * i);
@@ -504,7 +504,7 @@ class Softmax(gof.OpenMPOp):
         """
 
         begin_row_loop = """
-        #pragma omp parallel for schedule(static, 32)
+        #pragma omp parallel for 
         for (size_t i = 0; i < Nx[0]; ++i)
         {
             size_t j;
