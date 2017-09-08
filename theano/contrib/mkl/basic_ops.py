@@ -1,8 +1,29 @@
 import theano.tensor as T
-from theano.gof import Apply, Op
+from theano.gof import Apply, Op, Variable
 from theano.tensor.blas import ldflags
 from theano.contrib.mkl.mkl_helper import header_text
 from theano.contrib.mkl.mkl_type import MKLNdarrayType
+
+
+def as_mkl_ndarray_variable(x):
+    if isinstance(x, Variable):
+        while True:
+            if (isinstance(x.type, MKLNdarrayType)):
+                return x
+
+            # If x is the result of a transfer, try to dig through.
+            if getattr(x, 'owner', None):
+                if isinstance(x.owner.op, MKLToNdarray):
+                    x = x.owner.inputs[0]
+                    continue
+                if isinstance(x.owner.op, NdarrayToMKL):
+                    x = x.owner.inputs[0]
+                    continue
+            break
+
+        # If we couldn't deal with transfers, then maybe it's a tensor
+        if isinstance(x.type, T.TensorType):
+            return ndarray_to_mkl(x)
 
 
 class MKLOp(Op):
@@ -45,7 +66,7 @@ class NdarrayToMKL(MKLOp):
 
     def grad(self, inp, grads):
         gz, = grads,
-        ##gz = as_mkl_ndarray_variable(gz)
+        gz = as_mkl_ndarray_variable(gz)
 
         return [mkl_to_ndarray(gz)]
 
@@ -87,7 +108,7 @@ class MKLToNdarray(MKLOp):
     __props__ = ()
 
     def make_node(self, x):
-        ##x = as_mkl_ndarray_variable(x)
+        x = as_mkl_ndarray_variable(x)
         out = T.TensorType(broadcastable=x.broadcastable, dtype=x.dtype)()
 
         return Apply(self, [x], [out])
