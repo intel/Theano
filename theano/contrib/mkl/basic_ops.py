@@ -41,13 +41,13 @@ class MKLOp(Op):
         ccode += """
         #define DIMENSION  4
 
-        #define CHECK_ERR(f, err) \\
+        #define CHECK_ERR(f, err, fail_code) \\
             do { \\
                 (err) = (f); \\
                 if ((err) != E_SUCCESS) { \\
                     PyErr_Format(PyExc_RuntimeError, "Error in file [%s:%d], err code (%d)", \\
                            __FILE__, __LINE__, err); \\
-                    %(fail)s\\
+                    (fail_code); \\
                 } \\
             } while(0)
         """
