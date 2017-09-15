@@ -365,27 +365,31 @@ class Conv2D(MKLConvBase):
 
         z, = out_
 
-        if self.imshp is None:
-            imshp = node.inputs[0].shape
-        else:
-            imshp = self.imshp
-        in_n, in_c, in_h, in_w = imshp
-
         if self.kshp is None:
             kshp = node.inputs[1].shape
         else:
             kshp = self.kshp
 
         if node.inputs[1].type.ndim == 5:
+            tshp = [kshp[1] * kshp[0], kshp[2] * kshp[0], kshp[3], kshp[4]]
+        else:
+            tshp = [kshp[0], kshp[1], kshp[2], kshp[3]]
+
+        if None in self.imshp:
+            imshp = node.inputs[0].shape
+            in_n, in_c, in_h, in_w = 0, 0, 0, 0
+            o_n, o_c, o_h, o_w = 0, 0, 0, 0
+        else:
+            imshp = self.imshp
+            in_n, in_c, in_h, in_w = imshp
+            outshp = get_conv_output_shape(imshp, tshp, self.border_mode, self.subsample)
+            o_n, o_c, o_h, o_w = outshp
+
+        if node.inputs[1].type.ndim == 5:
             grp, k_n, k_c, k_h, k_w = kshp
-            assert in_c == k_c * grp
         else:
             k_n, k_c, k_h, k_w = kshp
             grp = 1
-            assert in_c == k_c
-
-        outshp = self.infer_shape(node, [imshp, kshp])
-        o_n, o_c, o_h, o_w = outshp[0]
 
         dH, dW = self.subsample
 
@@ -435,6 +439,12 @@ class Conv2D(MKLConvBase):
                 imageSize[1] = %(in_h)s;  //h
                 imageSize[2] = %(in_c)s;  //c
                 imageSize[3] = %(in_n)s;  //n
+                if (0 == imageSize[0] || 0 == imageSize[1] || 0 == imageSize[2] || 0 == imageSize[3]) {
+                    imageSize[0] = PyArray_DIMS(%(image)s)[3];
+                    imageSize[1] = PyArray_DIMS(%(image)s)[2];
+                    imageSize[2] = PyArray_DIMS(%(image)s)[1];
+                    imageSize[3] = PyArray_DIMS(%(image)s)[0];
+                }
                 imageStride[0] = 1;
                 imageStride[1] = imageSize[0];
                 imageStride[2] = imageSize[0] * imageSize[1];
@@ -455,13 +465,19 @@ class Conv2D(MKLConvBase):
                 zSize[1] = %(o_h)s;
                 zSize[2] = %(o_c)s;
                 zSize[3] = %(o_n)s;
+                if (0 == zSize[0] || 0 == zSize[1] || 0 == zSize[2] || 0 == zSize[3]) {
+                    zSize[0] = (imageSize[0] - 2 * convPadding[0] - weightSize[0]) / convStride[0] + 1;
+                    zSize[1] = (imageSize[1] - 2 * convPadding[1] - weightSize[1]) / convStride[1] + 1;
+                    zSize[2] = weightSize[3];
+                    zSize[3] = imageSize[3];
+                }
                 zStride[0] = 1;
                 zStride[1] = zSize[0];
                 zStride[2] = zSize[0] * zSize[1];
                 zStride[3] = zSize[0] * zSize[1] * zSize[2];
 
                 if(%(withBias)s) {
-                    biasSize[0] = %(o_c)s;
+                    biasSize[0] = zSize[2];
                     biasStride[0] = 1;
                 }
 
@@ -736,11 +752,6 @@ class ConvGradInputs(MKLConvBase):
     def c_code(self, node, name, inp, out_, sub):
         image, weights, gradz = inp
         imagegrad, = out_
-        if self.imshp is None:
-            imshp = node.inputs[0].shape
-        else:
-            imshp = self.imshp
-        in_n, in_c, in_h, in_w = imshp
 
         if self.kshp is None:
             kshp = node.inputs[1].shape
@@ -748,21 +759,25 @@ class ConvGradInputs(MKLConvBase):
             kshp = self.kshp
 
         if node.inputs[1].type.ndim == 5:
-            grp, k_n, k_c, k_h, k_w = kshp
-            assert in_c == k_c * grp
-        else:
-            grp = 1
-            k_n, k_c, k_h, k_w = kshp
-            assert in_c == k_c
-
-        if node.inputs[1].type.ndim == 5:
             tshp = [kshp[1] * kshp[0], kshp[2] * kshp[0], kshp[3], kshp[4]]
         else:
             tshp = [kshp[0], kshp[1], kshp[2], kshp[3]]
 
-        outshp = get_conv_output_shape(imshp, tshp, self.border_mode, self.subsample)
+        if None in self.imshp:
+            imshp = node.inputs[0].shape
+            in_n, in_c, in_h, in_w = 0, 0, 0, 0
+            o_n, o_c, o_h, o_w = 0, 0, 0, 0
+        else:
+            imshp = self.imshp
+            in_n, in_c, in_h, in_w = imshp
+            outshp = get_conv_output_shape(imshp, tshp, self.border_mode, self.subsample)
+            o_n, o_c, o_h, o_w = outshp
 
-        o_n, o_c, o_h, o_w = outshp
+        if node.inputs[1].type.ndim == 5:
+            grp, k_n, k_c, k_h, k_w = kshp
+        else:
+            grp = 1
+            k_n, k_c, k_h, k_w = kshp
 
         dH, dW = self.subsample
 
@@ -802,6 +817,13 @@ class ConvGradInputs(MKLConvBase):
                 imageSize[1] = %(in_h)s;  //h
                 imageSize[2] = %(in_c)s;  //c
                 imageSize[3] = %(in_n)s;  //n
+                if (0 == imageSize[0] || 0 == imageSize[1] || 0 == imageSize[2] || 0 == imageSize[3]) {
+                    imageSize[0] = PyArray_DIMS(%(image)s)[3];
+                    imageSize[1] = PyArray_DIMS(%(image)s)[2];
+                    imageSize[2] = PyArray_DIMS(%(image)s)[1];
+                    imageSize[3] = PyArray_DIMS(%(image)s)[0];
+                }
+
                 imageStride[0] = 1;
                 imageStride[1] = imageSize[0];
                 imageStride[2] = imageSize[0] * imageSize[1];
@@ -822,6 +844,12 @@ class ConvGradInputs(MKLConvBase):
                 zSize[1] = %(o_h)s;
                 zSize[2] = %(o_c)s;
                 zSize[3] = %(o_n)s;
+                if (0 == zSize[0] || 0 == zSize[1] || 0 == zSize[2] || 0 == zSize[3]) {
+                    zSize[0] = (imageSize[0] - 2 * convPadding[0] - weightSize[0]) / convStride[0] + 1;
+                    zSize[1] = (imageSize[1] - 2 * convPadding[1] - weightSize[1]) / convStride[1] + 1;
+                    zSize[2] = weightSize[3];
+                    zSize[3] = imageSize[3];
+                }
                 zStride[0] = 1;
                 zStride[1] = zSize[0];
                 zStride[2] = zSize[0] * zSize[1];
@@ -994,12 +1022,6 @@ class ConvGradWeights(MKLConvBase):
             bias = None
             weightgrad, = out_
 
-        if self.imshp is None:
-            imshp = node.inputs[0].shape
-        else:
-            imshp = self.imshp
-        in_n, in_c, in_h, in_w = imshp
-
         if self.kshp is None:
             kshp = node.inputs[1].shape
         else:
@@ -1008,12 +1030,20 @@ class ConvGradWeights(MKLConvBase):
         if node.inputs[1].type.ndim == 5:
             grp, k_n, k_c, k_h, k_w = kshp
             tshp = [kshp[1] * kshp[0], kshp[2] * kshp[0], kshp[3], kshp[4]]
-            assert in_c == k_c * grp
         else:
             k_n, k_c, k_h, k_w = kshp
             grp = 1
             tshp = [kshp[0], kshp[1], kshp[2], kshp[3]]
-            assert in_c == k_c
+
+        if None in self.imshp:
+            in_n, in_c, in_h, in_w = 0, 0, 0, 0
+            o_n, o_c, o_h, o_w = 0, 0, 0, 0
+            imshp = node.inputs[0].shape
+        else:
+            imshp = self.imshp
+            in_n, in_c, in_h, in_w = imshp
+            outshp = get_conv_output_shape(imshp, tshp, self.border_mode, self.subsample)
+            o_n, o_c, o_h, o_w = outshp
 
         if bias is not None:
             sub['bias'] = bias
@@ -1022,10 +1052,6 @@ class ConvGradWeights(MKLConvBase):
         else:
             withBias = 0
         sub['withBias'] = withBias
-
-        outshp = get_conv_output_shape(imshp, tshp, self.border_mode, self.subsample)
-
-        o_n, o_c, o_h, o_w = outshp
 
         dH, dW = self.subsample
         if self.border_mode == 'valid':
@@ -1068,6 +1094,13 @@ class ConvGradWeights(MKLConvBase):
                 imageSize[1] = %(in_h)s;  //h
                 imageSize[2] = %(in_c)s;  //c
                 imageSize[3] = %(in_n)s;  //n
+                if (0 == imageSize[0] || 0 == imageSize[1] || 0 == imageSize[2] || 0 == imageSize[3]) {
+                    imageSize[0] = PyArray_DIMS(%(image)s)[3];
+                    imageSize[1] = PyArray_DIMS(%(image)s)[2];
+                    imageSize[2] = PyArray_DIMS(%(image)s)[1];
+                    imageSize[3] = PyArray_DIMS(%(image)s)[0];
+                }
+
                 imageStride[0] = 1;
                 imageStride[1] = imageSize[0];
                 imageStride[2] = imageSize[0] * imageSize[1];
@@ -1083,17 +1116,25 @@ class ConvGradWeights(MKLConvBase):
                 weightStride[2] = weightSize[0] * weightSize[1];
                 weightStride[3] = weightSize[0] * weightSize[1] * weightSize[2];
                 weightStride[4] = weightSize[0] * weightSize[1] * weightSize[2] * weightSize[3];
+
                 zSize[0] = %(o_w)s;
                 zSize[1] = %(o_h)s;
                 zSize[2] = %(o_c)s;
                 zSize[3] = %(o_n)s;
+                if (0 == zSize[0] || 0 == zSize[1] || 0 == zSize[2] || 0 == zSize[3]) {
+                    zSize[0] = (imageSize[0] - 2 * convPadding[0] - weightSize[0]) / convStride[0] + 1;
+                    zSize[1] = (imageSize[1] - 2 * convPadding[1] - weightSize[1]) / convStride[1] + 1;
+                    zSize[2] = weightSize[3];
+                    zSize[3] = imageSize[3];
+                }
+
                 zStride[0] = 1;
                 zStride[1] = zSize[0];
                 zStride[2] = zSize[0] * zSize[1];
                 zStride[3] = zSize[0] * zSize[1] * zSize[2];
 
                 if( %(withBias)s ) {
-                    biasSize[0] = %(o_c)s;
+                    biasSize[0] = zSize[2];
                     biasStride[0] = 1;
                 }
 

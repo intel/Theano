@@ -675,9 +675,6 @@ def local_Conv2D_mkl(node):
     if None in node.op.kshp:
         return
 
-    if None in node.op.imshp:
-        return
-
     try:
         image, weight = node.inputs
         image_internal = U2IConv(imshp=node.op.imshp,
@@ -716,9 +713,6 @@ def local_ConvGradInputs_mkl(node):
         return
 
     if None in node.op.kshp:
-        return
-
-    if None in node.op.imshp:
         return
 
     try:
@@ -766,9 +760,6 @@ def local_ConvGradWeights_mkl(node):
         return
 
     if None in node.op.kshp:
-        return
-
-    if None in node.op.imshp:
         return
 
     try:

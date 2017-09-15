@@ -792,11 +792,17 @@ class U2IConv(BaseConvertOp):
             k_n, k_c, k_h, k_w = self.kshp
             grp = 1
 
-        o_n, o_c, o_h, o_w = get_conv_output_shape(image_shape=self.imshp,
-                                                   kernel_shape=self.kshp,
-                                                   border_mode=self.border_mode,
-                                                   filter_dilation=self.filter_dilation,
-                                                   subsample=self.subsample)
+        if None in self.imshp:
+            # self.imshp = node.inputs[0].shape
+            i_n, i_c, i_h, i_w = 0, 0, 0, 0
+            o_n, o_c, o_h, o_w = 0, 0, 0, 0
+        else:
+            i_n, i_c, i_h, i_w = self.imshp
+            o_n, o_c, o_h, o_w = get_conv_output_shape(image_shape=self.imshp,
+                                                       kernel_shape=self.kshp,
+                                                       border_mode=self.border_mode,
+                                                       filter_dilation=self.filter_dilation,
+                                                       subsample=self.subsample)
 
         if self.border_mode == 'valid':
             padH, padW = (0, 0)
@@ -833,6 +839,14 @@ class U2IConv(BaseConvertOp):
                 imageSize[1] = %(i_h)s;  //h
                 imageSize[2] = %(i_c)s;  //c
                 imageSize[3] = %(i_n)s;  //n
+
+                if (0 == imageSize[0] || 0 == imageSize[1] || 0 == imageSize[2] || 0 == imageSize[3]) {
+                    imageSize[0] = PyArray_DIMS(%(x)s)[3];
+                    imageSize[1] = PyArray_DIMS(%(x)s)[2];
+                    imageSize[2] = PyArray_DIMS(%(x)s)[1];
+                    imageSize[3] = PyArray_DIMS(%(x)s)[0];
+                }
+
                 imageStride[0] = 1;
                 imageStride[1] = imageSize[0];
                 imageStride[2] = imageSize[0] * imageSize[1];
@@ -853,6 +867,14 @@ class U2IConv(BaseConvertOp):
                 zSize[1] = %(o_h)s;
                 zSize[2] = %(o_c)s;
                 zSize[3] = %(o_n)s;
+
+                if (0 == zSize[0] || 0 == zSize[1] || 0 == zSize[2] || 0 == zSize[3]) {
+                   zSize[0] = (imageSize[0] - 2 * convPadding[0] - weightSize[0]) / convStride[0] + 1;
+                   zSize[1] = (imageSize[1] - 2 * convPadding[1] - weightSize[1]) / convStride[1] + 1;
+                   zSize[2] = weightSize[3];
+                   zSize[3] = imageSize[3];
+                }
+
                 zStride[0] = 1;
                 zStride[1] = zSize[0];
                 zStride[2] = zSize[0] * zSize[1];

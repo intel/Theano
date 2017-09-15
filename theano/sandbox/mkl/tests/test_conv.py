@@ -83,18 +83,21 @@ class test_mkl_conv_forward(unittest.TestCase):
             assert numpy.allclose(old_out, new_old)
 
     def test_no_shape(self):
-        images = T.dtensor4('inputs')
-        weights = T.dtensor4('weights')
+        images = T.ftensor4('inputs')
+        weights = T.ftensor4('weights')
 
-        convOut = conv2d(images, weights, filter_shape=(12, 3, 3, 3), filter_flip=False)
+        x = numpy.random.rand(32, 16, 128, 128).astype(numpy.float32)
+        w = numpy.random.rand(16, 16, 3, 3).astype(numpy.float32)
+
+        convOut = conv2d(images, weights, input_shape=None, filter_shape=(16, 16, 3, 3), filter_flip=False)
 
         fopt = theano.function(inputs=[images, weights], outputs=convOut, mode=mode_with_mkl)
 
         fori = theano.function(inputs=[images, weights], outputs=convOut, mode=mode_without_mkl)
 
-        # No optimization for the case image shape is None
-        assert all([not isinstance(n, (Conv2D, U2IConv, I2U)) for n in fopt.maker.fgraph.toposort()])
-        assert str(fopt.maker.fgraph.toposort()) == str(fori.maker.fgraph.toposort())
+        # assert all([not isinstance(n, (Conv2D, U2IConv, I2U)) for n in fopt.maker.fgraph.toposort()])
+        assert str(fopt.maker.fgraph.toposort()) != str(fori.maker.fgraph.toposort())
+        assert numpy.allclose(fori(x, w), fopt(x, w))
 
 
 class test_mkl_conv_backward(unittest.TestCase):
