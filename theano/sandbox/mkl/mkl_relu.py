@@ -1,72 +1,71 @@
-from theano import gof, Variable, Apply, tensor
+from theano import gof, Variable, Apply
 from theano.tensor import as_tensor_variable
 from theano.tensor.blas import ldflags
 from theano.sandbox.mkl import mkl_helper, basic_ops
+from theano.gradient import DisconnectedType
 
 
 class AbstractRelu(gof.Op):
-    __props__ = ('slope',)
+    __props__ = ()
 
-    def __init__(self, slope=1):
-        self.slope = slope
-
-    def make_node(self, x):
-        x = tensor.as_tensor_variable(x)
+    def make_node(self, x, slope):
+        x = as_tensor_variable(x)
         if x.type.ndim != 4:
             raise TypeError('Expect a 4D tensor, but actually got %dD tensor' %
                             x.type.ndim)
-        x = tensor.as_tensor_variable(x)
-        return gof.Apply(self, [x], [x.type()])
+        slope = as_tensor_variable(slope)
+        return gof.Apply(self, [x, slope], [x.type()])
 
     def grad(self, inp, grads):
-        x, = inp
+        x, slope, = inp
         gz, = grads
-        return [AbstractReluGrad(slope=self.slope)(x, gz)]
+        return [AbstractReluGrad()(x, slope, gz)]
 
     def perform(self, node, inp, out_):
-        x, = inp
+        x, slope, = inp
         z, = out_
 
         z[0] = x
 
 
 class AbstractReluGrad(gof.Op):
-    __props__ = ('slope',)
+    __props__ = ()
 
-    def __init__(self, slope=1):
-        self.slope = slope
-
-    def make_node(self, x, gz):
-        x = tensor.as_tensor_variable(x)
+    def make_node(self, x, slope, gz):
+        x = as_tensor_variable(x)
         if x.type.ndim != 4:
             raise TypeError('Expect a 4D tensor, but actually got %dD tensor' %
                             x.type.ndim)
-        x = tensor.as_tensor_variable(x)
-        return gof.Apply(self, [x, gz], [x.type()])
+        slope = as_tensor_variable(slope)
+        return gof.Apply(self, [x, slope, gz], [x.type()])
 
     def perform(self, node, inp, out_):
-        x, gz = inp
+        x, slope, gz = inp
         gx, = out_
 
         gx[0] = gz
 
 
 class Relu(basic_ops.MKLOp):
-    __props__ = ('slope',)
+    __props__ = ()
 
-    def __init__(self, slope=0):
-        self.slope = slope
-
-    def make_node(self, x):
+    def make_node(self, x, slope):
+        x = as_tensor_variable(x)
         if x.type.ndim != 4:
             raise TypeError()
-        x = as_tensor_variable(x)
-        return Apply(self, [x], [x.type()])
+        slope = as_tensor_variable(slope)
+        return Apply(self, [x, slope], [x.type()])
 
     def grad(self, inp, grads):
-        x, = inp
+        x, slope, = inp
         gz, = grads
-        return [ReluGrad(slope=self.slope)(x, gz)]
+
+        disc = [DisconnectedType()() for i in inp[1:]]
+
+        return [ReluGrad()(x, slope, gz)] + disc
+
+    def connection_pattern(self, node):
+        return [[1], [0]]
 
     def c_support_code(self):
         return mkl_helper.header_text()
@@ -132,13 +131,14 @@ class Relu(basic_ops.MKLOp):
         return ldflags()
 
     def c_code(self, node, name, inp, out, sub):
-        x, = inp
+        x, slope, = inp
         z, = out
-        slope = self.slope
 
         if node.inputs[0].type.dtype == "float32":
+            sub['dtype'] = "float"
             sub['precision'] = 'F32'
         elif node.inputs[0].type.dtype == "float64":
+            sub['dtype'] = "double"
             sub['precision'] = 'F64'
         else:
             raise TypeError('input must be float32 or float64')
@@ -151,6 +151,8 @@ class Relu(basic_ops.MKLOp):
             #ifdef _MKL_DEBUG_
             std::cout<<"Relu Fwd start"<<std::endl;
             #endif
+            %(dtype)s _slope = *(%(dtype)s *)(PyArray_DATA(%(slope)s));
+
             if(first_run){
                 x_bs = PyArray_DIMS(%(x)s)[0];
                 x_channels = PyArray_DIMS(%(x)s)[1];
@@ -205,7 +207,7 @@ class Relu(basic_ops.MKLOp):
                   std::cout<<"relu fwd_top_data_usr_l creat fail\\n";
                 }
 
-                e = dnnReLUCreateForward_%(precision)s(&reluFwd, NULL, fwd_bottom_data_usr_l, %(slope)s);
+                e = dnnReLUCreateForward_%(precision)s(&reluFwd, NULL, fwd_bottom_data_usr_l, _slope);
                 if (E_SUCCESS != e){
                     std::cout<<"relu fwd creat fail with error code "<<e<<std::endl;
                 }
@@ -216,7 +218,7 @@ class Relu(basic_ops.MKLOp):
             input_buffer_ptr = ((void **)PyArray_DATA(%(x)s))[1];
 
             if (first_run) {
-                e = dnnReLUCreateForward_%(precision)s(&reluFwd, NULL, fwd_bottom_data_int_l, %(slope)s);
+                e = dnnReLUCreateForward_%(precision)s(&reluFwd, NULL, fwd_bottom_data_int_l, _slope);
                 if (E_SUCCESS != e){
                     std::cout<<"relu fwd creat fail with error code "<<e<<std::endl;
                 }
@@ -269,10 +271,7 @@ class Relu(basic_ops.MKLOp):
 
 
 class ReluGrad(basic_ops.MKLOp):
-    __props__ = ('slope',)
-
-    def __init__(self, slope=1,):
-        self.slope = slope
+    __props__ = ()
 
     def c_headers(self):
         return ['<math.h>']
@@ -339,21 +338,23 @@ class ReluGrad(basic_ops.MKLOp):
     def c_libraries(self):
         return ldflags()
 
-    def make_node(self, x, gz):
+    def make_node(self, x, slope, gz):
         x = as_tensor_variable(x)
+        slope = as_tensor_variable(slope)
         gz = as_tensor_variable(gz)
         assert isinstance(x, Variable) and x.ndim == 4
         assert isinstance(gz, Variable) and gz.ndim == 4
-        return Apply(self, [x, gz], [x.type()])
+        return Apply(self, [x, slope, gz], [x.type()])
 
     def c_code(self, node, name, inp, out, sub):
-        x, gz, = inp
+        x, slope, gz, = inp
         z, = out
-        slope = self.slope
 
         if node.inputs[0].type.dtype == "float32":
+            sub['dtype'] = 'float'
             sub['precision'] = 'F32'
         elif node.inputs[0].type.dtype == "float64":
+            sub['dtype'] = 'double'
             sub['precision'] = 'F64'
         else:
             raise TypeError('input must be float32 or float64')
@@ -366,6 +367,8 @@ class ReluGrad(basic_ops.MKLOp):
             #ifdef _MKL_DEBUG_
             std::cout<<"Relu bwd start"<<std::endl;
             #endif
+            %(dtype)s _slope = *(%(dtype)s *)(PyArray_DATA(%(slope)s));
+
             if(first_run){
                 x_bs = PyArray_DIMS(%(x)s)[0];
                 x_channels = PyArray_DIMS(%(x)s)[1];
@@ -413,7 +416,7 @@ class ReluGrad(basic_ops.MKLOp):
 
             if(first_run){
                 if (E_SUCCESS != dnnReLUCreateBackward_%(precision)s(&reluBwd, NULL, bwd_bottom_diff_int_l,
-                    bwd_bottom_diff_int_l, %(slope)s)){
+                    bwd_bottom_diff_int_l, _slope)){
                     std::cout<<"relu bwd creat fail\\n";
                 }
             }

@@ -333,30 +333,33 @@ class I2U(BaseConvertOp):
 
 
 class U2IRelu(BaseConvertOp):
-    __props__ = ('slope', )
+    __props__ = ()
 
-    def __init__(self, slope=1):
-        self.slope = slope
-
-    def make_node(self, x):
+    def make_node(self, x, slope):
         x = T.as_tensor_variable(x)
+        slope = T.as_tensor_variable(slope)
 
-        return Apply(self, [x], [x.type()])
+        return Apply(self, [x, slope], [x.type()])
 
     def grad(self, inp, grads):
-        x, = inp
+        x, slope, = inp
         gz, = grads
 
-        return [U2IGrad()(x, gz)]
+        disc = [DisconnectedType()() for i in inp[1:]]
+        return [U2IGrad()(x, gz)] + disc
+
+    def connection_pattern(self, node):
+        return [[1], [0]]
 
     def c_code(self, node, name, inp, out, sub):
-        x, = inp
+        x, slope, = inp
         z, = out
 
-        slope = self.slope
         if 'float32' == node.inputs[0].type.dtype:
+            dtype = 'float'
             precision = 'F32'
         elif 'float64' == node.inputs[0].type.dtype:
+            dtype = 'double'
             precision = 'F64'
         else:
             raise Exception("Type %s is not supported!" %
@@ -365,6 +368,8 @@ class U2IRelu(BaseConvertOp):
         fail = sub['fail']
 
         ccode = """
+            %(dtype)s _slope = *(%(dtype)s *)PyArray_DATA(%(slope)s);
+
             if (1 == first_run) {
                 bottomSize[0] = PyArray_DIMS(%(x)s)[3];  //w
                 bottomSize[1] = PyArray_DIMS(%(x)s)[2];  //h
@@ -378,7 +383,7 @@ class U2IRelu(BaseConvertOp):
                 //create user layout
                 CHECK_ERR( dnnLayoutCreate_%(precision)s(&layout_user, DIMENSION, bottomSize, bottomStride), err );
 
-                CHECK_ERR( dnnReLUCreateForward_%(precision)s(&primitive, NULL, layout_user, %(slope)s), err );
+                CHECK_ERR( dnnReLUCreateForward_%(precision)s(&primitive, NULL, layout_user, _slope), err );
 
                 //create internal layout
                 CHECK_ERR( dnnLayoutCreateFromPrimitive_%(precision)s(&layout_internal, primitive, dnnResourceSrc), err );

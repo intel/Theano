@@ -21,16 +21,17 @@ class TestMKLRelu(unittest.TestCase):
         if len(inputs) == 2:
             # self, image
             _, x, = inputs
+            slope = 0
 
-            x_internal = U2IRelu()(x)
-            reluOut = Relu()(x_internal)
+            x_internal = U2IRelu()(x, slope)
+            reluOut = Relu()(x_internal, slope)
             output = I2U()(reluOut)
         elif len(inputs) == 3:
             # self, image, slope
             _, x, slope, = inputs
 
-            x_internal = U2IRelu(slope=slope)(x)
-            reluOut = Relu(slope=slope)(x_internal)
+            x_internal = U2IRelu()(x, slope)
+            reluOut = Relu()(x_internal, slope)
             output = I2U()(reluOut)
         else:
             raise ValueError("incorrect inputs list, should be 2 ~ 3 parameters!")

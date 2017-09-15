@@ -541,11 +541,11 @@ def local_relu_mkl(node):
     if node.inputs[0].type.ndim != 4:
         return
 
-    x, = node.inputs
+    x, slope, = node.inputs
 
     try:
-        x_internal = U2IRelu(slope=node.op.slope)(x)
-        reluOut = mkl_relu.Relu(slope=node.op.slope)(x_internal)
+        x_internal = U2IRelu()(x, slope)
+        reluOut = mkl_relu.Relu()(x_internal, slope)
         z_user = I2U()(reluOut)
 
         rval = z_user
@@ -569,14 +569,14 @@ def local_reluGrad_mkl(node):
     if node.inputs[0].type.ndim != 4:
         return
 
-    x, gz = node.inputs
+    x, slope, gz = node.inputs
 
     try:
-        x_internal = U2IRelu(slope=node.op.slope)(x)
-        reluOut = mkl_relu.Relu(slope=node.op.slope)(x_internal)
+        x_internal = U2IRelu()(x, slope)
+        reluOut = mkl_relu.Relu()(x_internal, slope)
         gz_internal = I2UGrad()(reluOut, gz)
 
-        reluGradOut = mkl_relu.ReluGrad(slope=node.op.slope)(x_internal, gz_internal)
+        reluGradOut = mkl_relu.ReluGrad()(x_internal, slope, gz_internal)
 
         gx_user = U2IGrad()(x, reluGradOut)
 
