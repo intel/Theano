@@ -1,9 +1,13 @@
 #ifndef _MKL_NDARRAY_H_
 #define _MKL_NDARRAY_H_
 
-#include <numpy/arrayobject.h>
 #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 #include <stdint.h>
+
+#include <numpy/arrayobject.h>
+#include "mkl.h"
 #include "mkl_dnn.h"
 #include "theano_mod_helper.h"
 
@@ -21,6 +25,10 @@
 #define MNDA_WORKSPACE  (1)
 #define MNDA_FLOAT32    (11)
 #define MNDA_FLOAT64    (12)
+
+// Flag
+#define MNDA_VIEW_FROM_MKL   (0x00000001)
+#define MNDA_VIEW_FROM_NP    (0x00000002)
 
 // Placeholder for dtype name. Only support FP32 and FP64 currently.
 // Other types will be supported in future.
@@ -52,37 +60,29 @@ char* MNDA_TYPE[] = {"", "", "", "", "", "", "", "",
 #endif // end #if PY_MAJOR_VERSION >= 3
 
 
-/**
- * MKLNdarray: wrapper for MKL private data and layout
- * This is a Python type.
- */
-typedef struct __MKLNdarray__{
+typedef struct __MKL_NDARRAY__{
 
     PyObject_HEAD
-    PyObject * base;        // reference for private_layout/data/workspace
+    PyObject * base;                // reference for data
 
-    /* Type-specific fields go here. */
-    int         nd;                                 // the number of dimensions of the tensor, maximum is 16 (MNDA_MAX_NDIM).
-    int         dtype;                              // an integer type number is given here.
-    size_t      data_size;                          // the number of bytes allocated for private_data
-    size_t      workspace_size;                     // the number of bytes allocated for private_workspace
-    size_t      user_structure[2 * MNDA_MAX_NDIM];  // user layout: [size0, size1, ..., stride0, stride1, ..., 0, 0].
-    dnnLayout_t private_layout;                     // layout instance create by MKL APIs
-    void*       private_data;                       // data buffer
-    dnnLayout_t private_layout_ws;                  // layout for workspace
-    void*       private_workspace;                  // computation workspace for forward and backward
+    int     flag;
+    int     nd;                     // the number of dimensions of the tensor, maximum is 16 (MNDA_MAX_NDIM).
+    int     dtype;                  // an integer type number is given here.
+    size_t  data_size;              // the number of bytes allocated for data
+    size_t  user_structure[2 * MNDA_MAX_NDIM];  // user layout: [size0, size1, ..., stride0, stride1, ..., 0, 0].
+    dnnLayout_t layout;
+    void*   data;           // data buffer
 }MKLNdarray;
 
 
+// common APIs
 MOD_PUBLIC int MKLNdarray_Check(const PyObject* ob);
-MOD_PUBLIC PyObject* MKLNdarray_New(int nd, int typenum);
+MOD_PUBLIC int MKLNdarray_set_structure(MKLNdarray* self, int nd, const size_t* dims, const size_t* strides);
 MOD_PUBLIC int MKLNdarray_CopyFromArray(MKLNdarray* self, PyArrayObject* obj);
 MOD_PUBLIC int MKLNdarray_ViewFromArray(MKLNdarray* self, PyArrayObject* obj);
-MOD_PUBLIC int MKLNdarray_set_structure(MKLNdarray* self, int nd, const size_t* dims);
-MOD_PUBLIC PyObject* MKLNdarray_CreateArrayObj(MKLNdarray* self);
-
+MOD_PUBLIC PyObject* MKLNdarray_New(int nd, int typenum);
+MOD_PUBLIC PyObject* MKLNdarray_CreateArrayObj(const MKLNdarray* self);
 MOD_PUBLIC void* MKLNdarray_DATA(const MKLNdarray* self);
-MOD_PUBLIC void* MKLNdarray_WORKSPACE(const MKLNdarray* self);
 MOD_PUBLIC dnnLayout_t MKLNdarray_LAYOUT(const MKLNdarray* self);
 MOD_PUBLIC const size_t* MKLNdarray_DIMS(const MKLNdarray* self);
 MOD_PUBLIC const size_t* MKLNdarray_STRIDES(const MKLNdarray* self);
@@ -92,8 +92,7 @@ MOD_PUBLIC int MKLNdarray_TYPE(const MKLNdarray* self);
 MOD_PUBLIC int MKLNdarray_create_buffer_from_primitive(MKLNdarray *self,
                                                        const dnnPrimitive_t *prim,
                                                        dnnResourceType_t res_type);
-MOD_PUBLIC int MKLNdarray_copy_layout(MKLNdarray *self, MKLNdarray *other, int type);
-MOD_PUBLIC int MKLNdarray_create_buffer_from_layout(MKLNdarray *self, int type);
+MOD_PUBLIC int MKLNdarray_create_buffer_from_layout(MKLNdarray *self);
 MOD_PUBLIC int MKLNdarray_create_buffer_from_structure(MKLNdarray *self);
 
 #endif

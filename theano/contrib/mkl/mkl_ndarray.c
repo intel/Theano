@@ -1,145 +1,80 @@
 #include <Python.h>
 #include <structmember.h>
-#include <numpy/arrayobject.h>
-#include <stdlib.h>
+
 #include "mkl_ndarray.h"
 
 
-int MKLNdarray_Check(const PyObject *ob);
-int MKLNdarray_CopyFromArray(MKLNdarray *self, PyArrayObject *obj);
-PyObject* MKLNdarray_New(int nd, int typenum);
-
-
-/*
- * This function is called in MKLNdarray_dealloc.
- *
- * Release all allocated buffer and layout in input self.
- *
- * If buffer/layout is reference of another MKLNdarray, decrease
- * the reference count of base MKLNdarray.
- */
 static int
 MKLNdarray_uninit(MKLNdarray *self) {
     int rval = 0;
 
-    // self is a view
     if (NULL != self->base) {
-        self->data_size = 0;
-        self->workspace_size = 0;
-        self->nd = -1;
-        self->dtype = -1;
         Py_DECREF(self->base);
-        self->base = NULL;
-        rval = 0;
-
-    } else {
-        if (MNDA_FLOAT64 == self->dtype) {  // for float64
-            if (self->private_data) {
-                rval = dnnReleaseBuffer_F64(self->private_data);
-
-                if (E_SUCCESS != rval) {
-                    PyErr_Format(PyExc_RuntimeError,
-                                 "MKLNdarray_uninit: fail to release data: %d, line: %d",
-                                 rval, __LINE__);
+        // if the object is reference to a PyArrayObject
+        // should release the layout additionally
+        if (self->flag & MNDA_VIEW_FROM_NP) {
+            if (self->layout) {
+                if (MNDA_FLOAT64 == self->dtype) {
+                    rval = dnnLayoutDelete_F64(self->layout);
+                } else {
+                    rval = dnnLayoutDelete_F32(self->layout);
                 }
-                self->private_data = NULL;
-            }
-
-            if (self->private_layout) {
-                rval = dnnLayoutDelete_F64(self->private_layout);
-
                 if (E_SUCCESS != rval) {
-                    PyErr_Format(PyExc_RuntimeError,
-                                 "MKLNdarray_uninit: fail to release layout: %d, line: %d",
-                                 rval, __LINE__);
+                        PyErr_Format(PyExc_RuntimeError,
+                                     "MKLNdarray_uninit: fail to release layout: %d, "
+                                     "line: %d, dtype: %d",
+                                     rval, __LINE__, self->dtype);
                 }
-                self->private_layout = NULL;
-            }
-
-            if (self->private_workspace) {
-                rval = dnnReleaseBuffer_F64(self->private_workspace);
-
-                if (E_SUCCESS != rval) {
-                    PyErr_Format(PyExc_RuntimeError,
-                                 "MKLNdarray_uninit: fail to release workspace: %d, line: %d",
-                                 rval, __LINE__);
-                }
-                self->private_workspace = NULL;
-            }
-
-            if (self->private_layout_ws) {
-                rval = dnnLayoutDelete_F64(self->private_layout_ws);
-
-                if (E_SUCCESS != rval) {
-                    PyErr_Format(PyExc_RuntimeError,
-                                 "MKLNdarray_uninit: fail to release workspace layout: %d, line: %d",
-                                 rval, __LINE__);
-                }
-                self->private_layout_ws = NULL;
-            }
-        } else {  // for float32
-            if (self->private_data) {
-                rval = dnnReleaseBuffer_F32(self->private_data);
-
-                if (E_SUCCESS != rval) {
-                    PyErr_Format(PyExc_RuntimeError,
-                                 "MKLNdarray_uninit: fail to release data: %d, line: %d",
-                                 rval, __LINE__);
-                }
-                self->private_data = NULL;
-            }
-
-            if (self->private_layout) {
-                rval = dnnLayoutDelete_F32(self->private_layout);
-
-                if (E_SUCCESS != rval) {
-                    PyErr_Format(PyExc_RuntimeError,
-                                 "MKLNdarray_uninit: fail to release layout: %d, line: %d",
-                                 rval, __LINE__);
-                }
-                self->private_layout = NULL;
-            }
-
-            if (self->private_workspace) {
-                rval = dnnReleaseBuffer_F32(self->private_workspace);
-
-                if (E_SUCCESS != rval) {
-                    PyErr_Format(PyExc_RuntimeError,
-                                 "MKLNdarray_uninit: fail to release workspace: %d, line: %d",
-                                 rval, __LINE__);
-                }
-                self->private_workspace = NULL;
-            }
-
-            if (self->private_layout_ws) {
-                rval = dnnLayoutDelete_F32(self->private_layout_ws);
-
-                if (E_SUCCESS != rval) {
-                    PyErr_Format(PyExc_RuntimeError,
-                                 "MKLNdarray_uninit: fail to release workspace layout: %d, line: %d",
-                                 rval, __LINE__);
-                }
-                self->private_layout_ws = NULL;
+                self->layout = NULL;
             }
         }
 
+        self->base      = NULL;
+        self->flag      = 0;
         self->data_size = 0;
-        self->workspace_size = 0;
-        self->nd = -1;
-        self->dtype = -1;
-    }
+        self->nd        = -1;
+        self->dtype     = -1;
 
+    } else {
+        if (self->data) {
+            if (MNDA_FLOAT64 == self->dtype) {
+                rval = dnnReleaseBuffer_F64(self->data);
+            } else {
+                rval = dnnReleaseBuffer_F32(self->data);
+            }
+            if (E_SUCCESS != rval) {
+                PyErr_Format(PyExc_RuntimeError,
+                             "MKLNdarray_uninit: fail to release data: %d, "
+                             "line: %d, dtype: %d",
+                             rval, __LINE__, self->dtype);
+            }
+            self->data = NULL;
+        }
+
+        if (self->layout) {
+            if (MNDA_FLOAT64 == self->dtype) {
+                rval = dnnLayoutDelete_F64(self->layout);
+            } else {
+                rval = dnnLayoutDelete_F32(self->layout);
+            }
+            if (E_SUCCESS != rval) {
+                PyErr_Format(PyExc_RuntimeError,
+                             "MKLNdarray_uninit: fail to release layout: %d, "
+                             "line: %d, dtype: %d",
+                             rval, __LINE__, self->dtype);
+            }
+            self->layout = NULL;
+        }
+
+        self->flag      = 0;
+        self->data_size = 0;
+        self->nd        = -1;
+        self->dtype     = -1;
+    }
     return rval;
 }
 
 
-/*
- * type: tp_dealloc
- *
- * This function will be called by Py_DECREF when object's reference count is reduced to zero.
- * DON'T call this function directly.
- *
- */
 static void
 MKLNdarray_dealloc(MKLNdarray *self) {
     if (Py_REFCNT(self) > 1) {
@@ -152,48 +87,29 @@ MKLNdarray_dealloc(MKLNdarray *self) {
 }
 
 
-/*
- * type:tp_new
- *
- * This function is used to create an instance of object.
- * Be first called when do a = MKLNdarray() in python code.
- *
- */
 static PyObject*
 MKLNdarray_new(PyTypeObject *type, PyObject *args, PyObject *kwds) {
     MKLNdarray* self = NULL;
     self = (MKLNdarray*)(type->tp_alloc(type, 0));
 
     if (NULL != self) {
-        self->base              = NULL;
-        self->nd                = -1;
-        self->dtype             = -1;
-        self->private_workspace = NULL;
-        self->private_data      = NULL;
-        self->private_layout    = NULL;
-        self->private_layout_ws = NULL;
-        self->data_size         = 0;
-        self->workspace_size    = 0;
-
+        self->base      = NULL;
+        self->flag      = 0;
+        self->nd        = -1;
+        self->dtype     = -1;
+        self->data      = NULL;
+        self->layout    = NULL;
+        self->data_size = 0;
         memset((void*)(self->user_structure), 0, 2 * MNDA_MAX_NDIM * sizeof (size_t));
     } else {
-        PyErr_SetString(PyExc_MemoryError, "MKLNdarray_new: fail to create a new instance \n");
+        PyErr_SetString(PyExc_MemoryError,
+                        "MKLNdarray_new: fail to create a new instance");
         return NULL;
     }
     return (PyObject*)self;
 }
 
 
-/*
- * type:tp_init
- *
- * This function is called after MKLNdarray_new.
- *
- * Initialize an instance. like __init__() in python code.
- *
- * args: need input a PyArrayObject here.
- *
- */
 static int
 MKLNdarray_init(MKLNdarray *self, PyObject *args, PyObject *kwds) {
     PyObject* arr = NULL;
@@ -202,7 +118,8 @@ MKLNdarray_init(MKLNdarray *self, PyObject *args, PyObject *kwds) {
         return -1;
 
     if (!PyArray_Check(arr)) {
-        PyErr_SetString(PyExc_TypeError, "MKLNdarray_init: PyArrayObject arg required");
+        PyErr_SetString(PyExc_TypeError,
+                        "MKLNdarray_init: PyArrayObject arg required");
         return -1;
     }
 
@@ -212,21 +129,18 @@ MKLNdarray_init(MKLNdarray *self, PyObject *args, PyObject *kwds) {
         rval = MKLNdarray_CopyFromArray(self, (PyArrayObject*)arr);
         return rval;
     } else {
-        PyErr_SetString(PyExc_RuntimeError, "MKLNdarray_init: input MKLNdarray* self is NULL");
+        PyErr_SetString(PyExc_RuntimeError,
+                        "MKLNdarray_init: input MKLNdarray* self is NULL");
         return -1;
     }
 }
 
 
-/*
- * type:tp_repr
- *
- * Return a string or a unicode object. like repr() in python code.
- *
- */
-PyObject* MKLNdarray_repr(PyObject *self) {
+PyObject*
+MKLNdarray_repr(PyObject *self) {
     if (NULL == self) {
-        PyErr_SetString(PyExc_RuntimeError, "MKLNdarray_repr: input PyObject* self is NULL");
+        PyErr_SetString(PyExc_RuntimeError,
+                        "MKLNdarray_repr: input PyObject* self is NULL");
         return NULL;
     }
 
@@ -245,12 +159,6 @@ PyObject* MKLNdarray_repr(PyObject *self) {
 }
 
 
-/*
- * Get dims in user_structure.
- *
- * A pointer is returned.
- *
- */
 const size_t*
 MKLNdarray_DIMS(const MKLNdarray *self) {
     if (NULL != self) {
@@ -261,12 +169,6 @@ MKLNdarray_DIMS(const MKLNdarray *self) {
 }
 
 
-/*
- * Get strides in user_structure.
- *
- * A pointer is returned. stride has a self->nd offset n user_structure
- *
- */
 const size_t*
 MKLNdarray_STRIDES(const MKLNdarray *self) {
     if (NULL != self) {
@@ -277,12 +179,6 @@ MKLNdarray_STRIDES(const MKLNdarray *self) {
 }
 
 
-/*
- * Get ndim.
- *
- * An integer is returned.
- *
- */
 int MKLNdarray_NDIM(const MKLNdarray *self) {
     if (NULL != self) {
         return self->nd;
@@ -292,12 +188,6 @@ int MKLNdarray_NDIM(const MKLNdarray *self) {
 }
 
 
-/*
- * Get dtype.
- *
- * An integer is returned.
- *
- */
 int MKLNdarray_TYPE(const MKLNdarray *self) {
     if (NULL != self) {
         return self->dtype;
@@ -307,213 +197,131 @@ int MKLNdarray_TYPE(const MKLNdarray *self) {
 }
 
 
-/*
- * Get address of private_data.
- *
- * An void* pointer is returned.
- *
- */
 void*
 MKLNdarray_DATA(const MKLNdarray *self) {
     if (NULL != self) {
-        return self->private_data;
+        return self->data;
     } else {
         return NULL;
     }
 }
 
-
-/*
- * Get address of private_workspace.
- *
- * An void* pointer is returned.
- *
- */
-void*
-MKLNdarray_WORKSPACE(const MKLNdarray *self) {
-    if (NULL != self) {
-        return self->private_workspace;
-    } else {
-        return NULL;
-    }
-}
-
-
-/*
- * Get address of private_layout.
- *
- * An dnnLayout_t* pointer is returned.
- *
- */
 dnnLayout_t
 MKLNdarray_LAYOUT(const MKLNdarray *self) {
     if (NULL != self) {
-        return self->private_layout;
+        return self->layout;
     } else {
         return NULL;
     }
 }
 
 
-/*
- * Create private layout and buffer for a MKLNdarray according to input primitive.
- *
- * If res_type is dnnResourceWorkspace, private_workspace will be allocated for MKLNdarray.
- *
- */
-int MKLNdarray_create_buffer_from_primitive(MKLNdarray *self, const dnnPrimitive_t *prim, dnnResourceType_t res_type) {
+int MKLNdarray_create_buffer_from_primitive(MKLNdarray           *self,
+                                            const dnnPrimitive_t *prim,
+                                            dnnResourceType_t    res_type) {
     if (NULL == self) {
         PyErr_SetString(PyExc_RuntimeError,
-                        "MKLNdarray_create_buffer_from_primitive:\
-                        input MKLNdarray* self is NULL");
+                        "MKLNdarray_create_buffer_from_primitive: "
+                        "input MKLNdarray* self is NULL");
         return -1;
     }
-    if (self->nd < 0 || (MNDA_FLOAT32 != self->dtype && MNDA_FLOAT64 != self->dtype)) {
+
+    if (self->nd < 0 ||
+        (MNDA_FLOAT32 != self->dtype && MNDA_FLOAT64 != self->dtype) ) {
         PyErr_SetString(PyExc_RuntimeError,
-                        "MKLNdarray_create_buffer_from_primitive:\
-                        Can't create layout and buffer for an uninitialized MKLNdarray");
+                        "MKLNdarray_create_buffer_from_primitive: "
+                        "Can't create layout and buffer for an uninitialized MKLNdarray");
         return -1;
     }
 
     if (NULL == prim) {
         PyErr_SetString(PyExc_RuntimeError,
-                        "MKLNdarray_create_buffer_from_primitive:\
-                        Can't create layout and buffer with an empty primtive");
+                        "MKLNdarray_create_buffer_from_primitive: "
+                        "Can't create layout and buffer with an empty primtive");
+        return -1;
+    }
+
+    if (dnnResourceWorkspace == res_type) {
+        PyErr_SetString(PyExc_RuntimeError,
+                        "MKLNdarray_create_buffer_from_primitive: "
+                        "Please refer to CDataType for workspace buffer");
+        return -1;
+    }
+
+    if (self->layout || self->data) {
+        PyErr_SetString(PyExc_RuntimeError,
+                        "MKLNdarray_create_buffer_from_primitive: "
+                        "Can't create layout or buffer for MKLNdarray repeatly");
         return -1;
     }
 
     int status = 0;
     if (MNDA_FLOAT64 == self->dtype) {  // for float64
-        if (dnnResourceWorkspace == res_type) {
-            if (NULL != self->private_workspace || NULL != self->private_layout_ws) {
-                PyErr_SetString(PyExc_RuntimeError,
-                                "MKLNdarray_create_buffer_from_primitive: Can't create buffer for workspace repeatly");
-                return -1;
-            }
-
-            status = dnnLayoutCreateFromPrimitive_F64(&(self->private_layout_ws), *prim, res_type);
-            if (E_SUCCESS != status || NULL == self->private_layout_ws) {
-                PyErr_Format(PyExc_RuntimeError,
-                             "MKLNdarray_create_buffer_from_primitive: Create layout for workspace failed: %d, line: %d",
-                             status, __LINE__);
-                return -1;
-            }
-
-            status = dnnAllocateBuffer_F64(&(self->private_workspace), self->private_layout_ws);
-            if (E_SUCCESS != status || NULL == self->private_workspace) {
-                PyErr_Format(PyExc_RuntimeError,
-                             "MKLNdarray_create_buffer_from_primitive: Create buffer for workspace failed: %d, line: %d",
-                             status, __LINE__);
-                return -1;
-            }
-
-            self->workspace_size = dnnLayoutGetMemorySize_F64(self->private_layout_ws);
-
-        } else {
-            if (NULL != self->private_layout || NULL != self->private_data) {
-                PyErr_SetString(PyExc_RuntimeError,
-                                "MKLNdarray_create_buffer_from_primitive: Can't create layout or buffer for MKLNdarray repeatly");
-                return -1;
-            }
-
-            status = dnnLayoutCreateFromPrimitive_F64(&(self->private_layout), *prim, res_type);
-            if (E_SUCCESS != status || NULL == self->private_layout) {
-                PyErr_Format(PyExc_RuntimeError,
-                             "MKLNdarray_create_buffer_from_primitive: Create private layout failed: %d, line: %d",
-                             status, __LINE__);
-                return -1;
-            }
-
-            status = dnnAllocateBuffer_F64(&(self->private_data), self->private_layout);
-            if (E_SUCCESS != status || NULL == self->private_data) {
-                PyErr_Format(PyExc_RuntimeError,
-                             "MKLNdarray_create_buffer_from_primitive: Create private data failed: %d, line: %d",
-                             status, __LINE__);
-                return -1;
-            }
-            self->data_size = dnnLayoutGetMemorySize_F64(self->private_layout);
+        status = dnnLayoutCreateFromPrimitive_F64(&(self->layout), *prim, res_type);
+        if (E_SUCCESS != status || NULL == self->layout) {
+            PyErr_Format(PyExc_RuntimeError,
+                         "MKLNdarray_create_buffer_from_primitive: "
+                         "Create layout failed: %d, line: %d",
+                         status, __LINE__);
+            return -1;
         }
+
+        status = dnnAllocateBuffer_F64(&(self->data), self->layout);
+        if (E_SUCCESS != status || NULL == self->data) {
+            PyErr_Format(PyExc_RuntimeError,
+                         "MKLNdarray_create_buffer_from_primitive: "
+                         "Create private data failed: %d, line: %d",
+                         status, __LINE__);
+            return -1;
+        }
+        self->data_size = dnnLayoutGetMemorySize_F64(self->layout);
     } else {  // for float32
-        if (dnnResourceWorkspace == res_type) {
-            if (NULL != self->private_workspace || NULL != self->private_layout_ws) {
-                PyErr_SetString(PyExc_RuntimeError,
-                                "MKLNdarray_create_buffer_from_primitive: Can't create buffer for workspace repeatly");
-                return -1;
-            }
-
-            status = dnnLayoutCreateFromPrimitive_F32(&(self->private_layout_ws), *prim, res_type);
-            if (E_SUCCESS != status || NULL == self->private_layout_ws) {
-                PyErr_Format(PyExc_RuntimeError,
-                             "MKLNdarray_create_buffer_from_primitive: Create layout for workspace failed: %d, line: %d",
-                             status, __LINE__);
-                return -1;
-            }
-
-            status = dnnAllocateBuffer_F32(&(self->private_workspace), self->private_layout_ws);
-            if (E_SUCCESS != status || NULL == self->private_workspace) {
-                PyErr_Format(PyExc_RuntimeError,
-                             "MKLNdarray_create_buffer_from_primitive: Create buffer for workspace failed: %d, line: %d",
-                             status, __LINE__);
-                return -1;
-            }
-
-            self->workspace_size = dnnLayoutGetMemorySize_F32(self->private_layout_ws);
-
-        } else {
-            if (NULL != self->private_layout || NULL != self->private_data) {
-                PyErr_SetString(PyExc_RuntimeError,
-                                "MKLNdarray_create_buffer_from_primitive: Can't create layout or buffer for MKLNdarray repeatly");
-                return -1;
-            }
-
-            status = dnnLayoutCreateFromPrimitive_F32(&(self->private_layout), *prim, res_type);
-            if (E_SUCCESS != status || NULL == self->private_layout) {
-                PyErr_Format(PyExc_RuntimeError,
-                             "MKLNdarray_create_buffer_from_primitive: Create private layout failed: %d, line: %d",
-                             status, __LINE__);
-                return -1;
-            }
-
-            status = dnnAllocateBuffer_F32(&(self->private_data), self->private_layout);
-            if (E_SUCCESS != status || NULL == self->private_data) {
-                PyErr_Format(PyExc_RuntimeError,
-                             "MKLNdarray_create_buffer_from_primitive: Create private data failed: %d, line: %d",
-                             status, __LINE__);
-                return -1;
-            }
-            self->data_size = dnnLayoutGetMemorySize_F32(self->private_layout);
+        status = dnnLayoutCreateFromPrimitive_F32(&(self->layout), *prim, res_type);
+        if (E_SUCCESS != status || NULL == self->layout) {
+            PyErr_Format(PyExc_RuntimeError,
+                         "MKLNdarray_create_buffer_from_primitive: "
+                         "Create layout failed: %d, line: %d",
+                         status, __LINE__);
+            return -1;
         }
+
+        status = dnnAllocateBuffer_F32(&(self->data), self->layout);
+        if (E_SUCCESS != status || NULL == self->data) {
+            PyErr_Format(PyExc_RuntimeError,
+                         "MKLNdarray_create_buffer_from_primitive: "
+                         "Create private data failed: %d, line: %d",
+                         status, __LINE__);
+            return -1;
+        }
+        self->data_size = dnnLayoutGetMemorySize_F32(self->layout);
     }
+
     return 0;
 }
 
 
-/*
- * In this function a plain layout is created for self according to user_structure.
- *
- * A private_data buffer is allocated for self according to the plain layout.
- *
- */
 int MKLNdarray_create_buffer_from_structure(MKLNdarray *self) {
     if (NULL == self) {
         PyErr_SetString(PyExc_RuntimeError,
-                        "MKLNdarray_create_buffer_from_structure: input MKLNdarray* self is NULL");
+                        "MKLNdarray_create_buffer_from_structure: "
+                        "input MKLNdarray* self is NULL");
         return -1;
     }
     if (self->nd <= 0) {
         PyErr_Format(PyExc_RuntimeError,
-                     "MKLNdarray_create_buffer_from_structure:\
-                     Can't create mkl dnn layout and allocate buffer for a %d dimension MKLNdarray",
+                     "MKLNdarray_create_buffer_from_structure: "
+                     "Can't create mkl layout and allocate buffer "
+                     "for a %d dimension MKLNdarray",
                      self->nd);
         return -1;
     }
 
     size_t ndim = self->nd;
 
-    if (self->private_layout || self->private_data) {
+    if (self->layout || self->data) {
         PyErr_Format(PyExc_RuntimeError,
-                     "MKLNdarray_create_buffer_from_structure:\
-                     MKL layout and buffer have been allocated for %p \n", self);
+                     "MKLNdarray_create_buffer_from_structure: "
+                     "MKL buffer has been allocated for %p \n", self);
         return -1;
     }
 
@@ -526,244 +334,190 @@ int MKLNdarray_create_buffer_from_structure(MKLNdarray *self) {
         mkl_stride[i] = (MKLNdarray_STRIDES(self))[self->nd - i -1];
     }
 
+    int status = 0;
     // float64
     if (MNDA_FLOAT64 == self->dtype) {
-        int status = dnnLayoutCreate_F64(&(self->private_layout),
-                                         ndim,
-                                         mkl_size,
-                                         mkl_stride);
-        if (E_SUCCESS != status || NULL == self->private_layout) {
+        status = dnnLayoutCreate_F64(&(self->layout), ndim, mkl_size, mkl_stride);
+        if (E_SUCCESS != status || NULL == self->layout) {
             PyErr_Format(PyExc_RuntimeError,
-                         "MKLNdarray_create_buffer_from_structure: Call dnnLayoutCreate_F64 failed: %d",
+                         "MKLNdarray_create_buffer_from_structure: "
+                         "Call dnnLayoutCreate_F64 failed: %d",
                          status);
             return -1;
         }
 
-        status = dnnAllocateBuffer_F64(&(self->private_data), self->private_layout);
-        if (E_SUCCESS != status || NULL == self->private_data) {
+        status = dnnAllocateBuffer_F64(&(self->data), self->layout);
+        if (E_SUCCESS != status || NULL == self->data) {
             PyErr_Format(PyExc_RuntimeError,
-                         "MKLNdarray_create_buffer_from_structure: Call dnnAllocateBuffer_F64 failed: %d",
+                         "MKLNdarray_create_buffer_from_structure: "
+                         "Call dnnAllocateBuffer_F64 failed: %d",
                          status);
             return -1;
         }
-        self->data_size = dnnLayoutGetMemorySize_F64(self->private_layout);
+        self->data_size = dnnLayoutGetMemorySize_F64(self->layout);
 
     } else {  // float32
-        int status = dnnLayoutCreate_F32(&(self->private_layout),
-                                         ndim,
-                                         mkl_size,
-                                         mkl_stride);
-        if (E_SUCCESS != status || NULL == self->private_layout) {
+        status = dnnLayoutCreate_F32(&(self->layout), ndim, mkl_size, mkl_stride);
+        if (E_SUCCESS != status || NULL == self->layout) {
             PyErr_Format(PyExc_RuntimeError,
-                         "MKLNdarray_create_buffer_from_structure: Call dnnLayoutCreate_F32 failed: %d",
+                         "MKLNdarray_create_buffer_from_structure: "
+                         "Call dnnLayoutCreate_F32 failed: %d",
                          status);
             return -1;
         }
 
-        status = dnnAllocateBuffer_F32(&(self->private_data), self->private_layout);
-        if (E_SUCCESS != status || NULL == self->private_data) {
+        status = dnnAllocateBuffer_F32(&(self->data), self->layout);
+        if (E_SUCCESS != status || NULL == self->data) {
             PyErr_Format(PyExc_RuntimeError,
-                         "MKLNdarray_create_buffer_from_structure: Call dnnAllocateBuffer_F32 failed: %d",
+                         "MKLNdarray_create_buffer_from_structure: "
+                         "Call dnnAllocateBuffer_F32 failed: %d",
                          status);
             return -1;
         }
-        self->data_size = dnnLayoutGetMemorySize_F32(self->private_layout);
+        self->data_size = dnnLayoutGetMemorySize_F32(self->layout);
     }
 
     return 0;
 }
 
 
-/*
- * Sometimes, we need to allocate private_data buffer for a MKLNdarray from its
- * private_layout.
- *
- */
-int MKLNdarray_create_buffer_from_layout(MKLNdarray *self, int type) {
+int MKLNdarray_create_buffer_from_layout(MKLNdarray *self) {
     if (NULL == self) {
         PyErr_SetString(PyExc_RuntimeError,
-                        "MKLNdarray_create_buffer_from_layout: input MKLNdarray* self is NULL");
+                        "MKLNdarray_create_buffer_from_layout: "
+                        "input MKLNdarray* self is NULL");
         return -1;
     }
 
-    dnnLayout_t layout = NULL;
-    void** buffer = NULL;
-    size_t* data_size = NULL;
-
-    if (MNDA_DATA == type) {
-        layout = self->private_layout;
-        buffer = &(self->private_data);
-        data_size = &(self->data_size);
-
-    } else if (MNDA_WORKSPACE == type) {
-        layout = self->private_layout_ws;
-        buffer = &(self->private_workspace);
-        data_size = &(self->workspace_size);
-
-    } else {
-        PyErr_Format(PyExc_ValueError,
-                     "MKLNdarray_create_buffer_from_layout: input type (%d) is not spported",
-                     type);
-        return -1;
-    }
-
-    if (NULL == layout) {
+    if (NULL == self->layout) {
         PyErr_SetString(PyExc_RuntimeError,
-                        "MKLNdarray_create_buffer_from_layout: layout is NULL");
+                        "MKLNdarray_create_buffer_from_layout: "
+                        "layout is NULL");
         return -1;
     }
 
-    if (NULL != (*buffer)) {
+    if (self->data) {
         PyErr_SetString(PyExc_RuntimeError,
-                        "MKLNdarray_create_buffer_from_layout: buffer is already allocated");
+                        "MKLNdarray_create_buffer_from_layout: "
+                        "MKL buffer is already allocated");
         return -1;
     }
 
     int status = 0;
     if (MNDA_FLOAT64 == self->dtype) {
-        status = dnnAllocateBuffer_F64(buffer, layout);
-        if (E_SUCCESS != status || NULL == (*buffer)) {
-            PyErr_Format(PyExc_RuntimeError,
-                         "MKLNdarray_create_buffer_from_layout: Call dnnAllocateBuffer_F64 failed: %d",
-                         status);
-            return -1;
-        }
-        (*data_size) = dnnLayoutGetMemorySize_F64(layout);
+        status = dnnAllocateBuffer_F64(&(self->data), self->layout);
+        self->data_size = dnnLayoutGetMemorySize_F64(self->layout);
     } else {  // float32
-        status = dnnAllocateBuffer_F32(buffer, layout);
-        if (E_SUCCESS != status || NULL == (*buffer)) {
-            PyErr_Format(PyExc_RuntimeError,
-                         "MKLNdarray_create_buffer_from_layout: Call dnnAllocateBuffer_F32 failed: %d",
-                         status);
-            return -1;
-        }
-        (*data_size) = dnnLayoutGetMemorySize_F32(layout);
+        status = dnnAllocateBuffer_F32(&(self->data), self->layout);
+        self->data_size = dnnLayoutGetMemorySize_F32(self->layout);
+    }
+
+    if (E_SUCCESS != status || NULL == self->data) {
+        self->data_size = 0;
+        PyErr_Format(PyExc_RuntimeError,
+                     "MKLNdarray_create_buffer_from_layout: "
+                     "Call dnnAllocateBuffer failed: %d, dtype: %d",
+                     status, self->dtype);
+        return -1;
     }
     return 0;
 }
 
 
-/*
- * If we want to create a MKLNdarray with a same private_layout from another
- * MKLNdarray. We serialize the private_layout into a temporary buffer, and
- * deserialize the buffer into a new layout.
- *
- * Copy layout from other to self.
- *
- * type: MNDA_DATA: copy private_layout
- *       MNDA_WORKSPACE: copy private_layout_ws
- *
- */
-int MKLNdarray_copy_layout(MKLNdarray *self, MKLNdarray *other, int type) {
-    if (NULL == self || NULL == other) {
+int MKLNdarray_copy_layout(MKLNdarray *dst, const MKLNdarray *src) {
+    if (NULL == dst || NULL == src) {
         PyErr_SetString(PyExc_RuntimeError,
-                        "MKLNdarray_copy_layout: input MKLNdarray* self or other is NULL");
+                        "MKLNdarray_copy_layout: "
+                        "input source or destination is NULL");
         return -1;
     }
 
-    if (self == other) {
+    if (dst == src) {
         PyErr_SetString(PyExc_RuntimeError,
-                        "MKLNdarray_copy_layout: source is same with destination");
+                        "MKLNdarray_copy_layout: "
+                        "source is same with destination");
         return -1;
     }
 
-    assert (self->nd == other->nd);
-    assert (self->dtype == other->dtype);
-
-    dnnLayout_t* src_layout = NULL;
-    dnnLayout_t* dst_layout = NULL;
-
-    if (MNDA_DATA == type) {
-        assert (NULL != other->private_layout);
-
-        src_layout = &(other->private_layout);
-        dst_layout = &(self->private_layout);
-
-        if (self->private_layout) {
-            PyErr_SetString(PyExc_RuntimeError,
-                            "MKLNdarray_copy_layout: layout is already exsited");
-            return -1;
-        }
-
-    } else if (MNDA_WORKSPACE == type) {
-        assert (NULL != other->private_layout_ws);
-
-        src_layout = &(other->private_layout_ws);
-        dst_layout = &(self->private_layout_ws);
-
-        if (self->private_layout_ws) {
-            PyErr_SetString(PyExc_RuntimeError,
-                            "MKLNdarray_copy_layout: layout is already exsited");
-            return -1;
-        }
-
-    } else {
-        PyErr_Format(PyExc_ValueError,
-                     "MKLNdarray_copy_layout: input type (%d) is not supported",
-                     type);
+    if (NULL == src->layout) {
+        PyErr_SetString(PyExc_RuntimeError,
+                        "MKLNdarray_copy_layout: "
+                        "layout of source object is NULL");
         return -1;
     }
+
+    if (dst->layout) {
+        PyErr_SetString(PyExc_RuntimeError,
+                        "MKLNdarray_copy_layout: "
+                        "destination layout is already existed");
+        return -1;
+    }
+
+    assert (src->nd == dst->nd);
+    assert (src->dtype == dst->dtype);
 
     int status = 0;
     void* layout_buf = NULL;
-    if (MNDA_FLOAT64 == self->dtype) {
-        layout_buf = (void*)malloc(dnnLayoutSerializationBufferSize_F64());
+    if (MNDA_FLOAT64 == src->dtype) {
+        layout_buf = (void*)mkl_malloc(dnnLayoutSerializationBufferSize_F64(), 64);
         if (NULL == layout_buf) {
             PyErr_SetString(PyExc_MemoryError,
-                            "MKLNdarray_copy_layout: alloc buffer for layout failed");
+                            "MKLNdarray_copy_layout: "
+                            "allocate buffer for layout failed");
             return -1;
         }
 
-        status = dnnLayoutSerialize_F64(*src_layout, layout_buf);
+        status = dnnLayoutSerialize_F64(src->layout, layout_buf);
         if (E_SUCCESS != status) {
             PyErr_SetString(PyExc_RuntimeError,
-                            "MKLNdarray_copy_layout: serialize layout failed");
-
+                            "MKLNdarray_copy_layout: "
+                            "serialize layout failed");
             if (layout_buf) {
-                free (layout_buf);
+                mkl_free (layout_buf);
                 layout_buf = NULL;
             }
             return -1;
         }
 
-        status = dnnLayoutDeserialize_F64(dst_layout, layout_buf);
+        status = dnnLayoutDeserialize_F64(&(dst->layout), layout_buf);
         if (E_SUCCESS != status) {
             PyErr_SetString(PyExc_RuntimeError,
-                            "MKLNdarray_copy_layout: deserialize layout failed");
-
+                            "MKLNdarray_copy_layout: "
+                            "deserialize layout failed");
             if (layout_buf) {
-                free (layout_buf);
+                mkl_free (layout_buf);
                 layout_buf = NULL;
             }
             return -1;
         }
     } else {  // MNDA_FLOAT32
-        layout_buf = (void*)malloc(dnnLayoutSerializationBufferSize_F32());
+        layout_buf = (void*)mkl_malloc(dnnLayoutSerializationBufferSize_F32(), 64);
         if (NULL == layout_buf) {
             PyErr_SetString(PyExc_MemoryError,
-                            "MKLNdarray_copy_layout: alloc buffer for layout failed");
+                            "MKLNdarray_copy_layout: "
+                            "allocate buffer for layout failed");
             return -1;
         }
 
-        status = dnnLayoutSerialize_F32(*src_layout, layout_buf);
+        status = dnnLayoutSerialize_F32(src->layout, layout_buf);
         if (E_SUCCESS != status) {
             PyErr_SetString(PyExc_RuntimeError,
-                            "MKLNdarray_copy_layout: serialize layout failed");
-
+                            "MKLNdarray_copy_layout: "
+                            "serialize layout failed");
             if (layout_buf) {
-                free (layout_buf);
+                mkl_free (layout_buf);
                 layout_buf = NULL;
             }
             return -1;
         }
 
-        status = dnnLayoutDeserialize_F32(dst_layout, layout_buf);
+        status = dnnLayoutDeserialize_F32(&(dst->layout), layout_buf);
         if (E_SUCCESS != status) {
             PyErr_SetString(PyExc_RuntimeError,
-                            "MKLNdarray_copy_layout: deserialize layout failed");
-
+                            "MKLNdarray_copy_layout: "
+                            "deserialize layout failed");
             if (layout_buf) {
-                free (layout_buf);
+                mkl_free (layout_buf);
                 layout_buf = NULL;
             }
             return -1;
@@ -771,22 +525,17 @@ int MKLNdarray_copy_layout(MKLNdarray *self, MKLNdarray *other, int type) {
     }
 
     if (layout_buf) {
-        free (layout_buf);
+        mkl_free (layout_buf);
         layout_buf = NULL;
     }
     return 0;
 }
 
 
-/*
- * Set user_structure for self.
- *
- * nd: number of dimension. nd should <= MNDA_MAX_NDIM (16).
- *
- * dims: dimension info
- *
- */
-int MKLNdarray_set_structure(MKLNdarray *self, int nd, const size_t *dims) {
+int MKLNdarray_set_structure(MKLNdarray *self,
+                             int nd,
+                             const size_t *dims,
+                             const size_t *strides) {
     if (NULL == self) {
         PyErr_SetString(PyExc_RuntimeError,
                         "MKLNdarray_set_structure: input MKLNdarray* self is NULL");
@@ -801,61 +550,79 @@ int MKLNdarray_set_structure(MKLNdarray *self, int nd, const size_t *dims) {
 
     if (nd > MNDA_MAX_NDIM) {
         PyErr_Format(PyExc_ValueError,
-                     "MKLNdarray does not support a %d-dim array. Try array which ndim is <= %d",
+                     "MKLNdarray does not support a %d-dim array. "
+                     "Try array which ndim is <= %d",
                      nd, MNDA_MAX_NDIM);
         return -1;
     }
 
-    self->user_structure[0] = dims[0];
-    self->user_structure[2 * nd - 1] = 1;
-    for (int i = 1; i < nd; i++) {
-        // nchw
-        self->user_structure[i] = dims[i];
-        // chw, hw, w, 1
-        self->user_structure[2 * nd - 1 - i] = self->user_structure[2 * nd - i] * dims[nd - i];
+    // if argument strides is NULL, strides in user_structure will be computed 
+    // from argument dims.
+    if (NULL == strides) {
+        self->user_structure[0] = dims[0];
+        self->user_structure[2 * nd - 1] = 1;
+        for (int i = 1; i < nd; i++) {
+            self->user_structure[i] = dims[i];
+            self->user_structure[2 * nd - 1 - i] = self->user_structure[2 * nd - i] * dims[nd - i];
+        }
+    } else {
+        for (int i = 0; i < nd; i++) {
+            self->user_structure[i] = dims[i];
+            self->user_structure[nd + i] = strides[i];
+        }
     }
 
     return 0;
 }
 
 
-/*
- * Copy/construct a plain MKLNdarray with dada/structure from a PyArrayObject.
- *
- * Check the dtype and ndim of PyArrayObject: float32 or float64; ndim <= 16.
- *
- */
 int MKLNdarray_CopyFromArray(MKLNdarray *self, PyArrayObject *obj) {
     if (NULL == self || NULL == obj) {
         PyErr_SetString(PyExc_RuntimeError,
-                        "MKLNdarray_CopyFromArray: input self or obj is NULL");
+                        "MKLNdarray_CopyFromArray: "
+                        "input self or obj is NULL");
         return -1;
     }
 
-    int ndim = PyArray_NDIM(obj);
+    if (self->base || self->layout || self->data) {
+        PyErr_Format(PyExc_RuntimeError,
+                     "MKLNdarray_CopyFromArray: "
+                     "MKLNdarray base, layout or buffer have been allocated for %p", self);
+        return -1;
+    }
+
+    int ndim    = PyArray_NDIM(obj);
     npy_intp* d = PyArray_DIMS(obj);
     int typenum = PyArray_TYPE(obj);
 
     if (NPY_FLOAT32 != typenum && NPY_FLOAT64 != typenum) {
         PyErr_SetString(PyExc_TypeError,
-                        "MKLNdarray_CopyFromArray: can only copy from float/double arrays");
+                        "MKLNdarray_CopyFromArray: "
+                        "can only copy from float/double arrays");
         return -1;
     }
 
     if (ndim < 0 || ndim > MNDA_MAX_NDIM) {
         PyErr_Format(PyExc_ValueError,
-                     "MKLNdarray does not support a %d-dim array. Try array which ndim is <= %d",
+                     "MKLNdarray_CopyFromArray: "
+                     "does not support a %d-dim array. "
+                     "Try array which ndim is <= %d",
                      ndim, MNDA_MAX_NDIM);
         return -1;
     }
 
     self->dtype = typenum;
-    self->nd = ndim;
+    self->nd    = ndim;
+    self->flag  = 0;
 
-    PyArrayObject* py_src = (PyArrayObject*)PyArray_ContiguousFromAny((PyObject*)obj, typenum, self->nd, self->nd);
+    PyArrayObject* py_src = (PyArrayObject*)PyArray_ContiguousFromAny((PyObject*)obj,
+                                                                      typenum,
+                                                                      self->nd,
+                                                                      self->nd);
     if (!py_src) {
         PyErr_SetString(PyExc_RuntimeError,
-                        "MKLNdarray_CopyFromArray: fail to cast obj to contiguous array");
+                        "MKLNdarray_CopyFromArray: "
+                        "fail to cast obj to contiguous array");
         return -1;
     }
 
@@ -867,7 +634,7 @@ int MKLNdarray_CopyFromArray(MKLNdarray *self, PyArrayObject *obj) {
         user_size *= dims[i];
     }
 
-    int err = MKLNdarray_set_structure(self, ndim, dims);
+    int err = MKLNdarray_set_structure(self, ndim, dims, NULL);
     if (err < 0) {
         Py_DECREF(py_src);
         return err;
@@ -882,7 +649,8 @@ int MKLNdarray_CopyFromArray(MKLNdarray *self, PyArrayObject *obj) {
 
     // copy data to mkl buffer
     size_t element_size = (size_t)PyArray_ITEMSIZE(py_src);
-    memcpy((void*)self->private_data, (void*)PyArray_DATA(py_src), user_size * element_size);
+    assert (user_size * element_size <= self->data_size);
+    memcpy((void*)self->data, (void*)PyArray_DATA(py_src), user_size * element_size);
     Py_DECREF(py_src);
     return 0;
 }
@@ -891,47 +659,57 @@ int MKLNdarray_CopyFromArray(MKLNdarray *self, PyArrayObject *obj) {
 int MKLNdarray_ViewFromArray(MKLNdarray *self, PyArrayObject *obj) {
     if (NULL == self || NULL == obj) {
         PyErr_SetString(PyExc_RuntimeError,
-                        "MKLNdarray_ViewFromArray: input self or obj is NULL");
+                        "MKLNdarray_ViewFromArray: "
+                        "input self or obj is NULL");
         return -1;
     }
 
-    if (self->base || self->private_layout || self->private_data) {
+    if (self->base || self->layout || self->data) {
         PyErr_Format(PyExc_RuntimeError,
-                     "MKLNdarray_ViewFromArray:\
-                     MKLNdarray base, layout or buffer have been allocated for %p \n", self);
+                     "MKLNdarray_ViewFromArray: "
+                     "MKLNdarray base, layout or buffer have been allocated for %p", self);
         return -1;
     }
 
-    int ndim = PyArray_NDIM(obj);
-    npy_intp* d = PyArray_DIMS(obj);
-    int typenum = PyArray_TYPE(obj);
+    int ndim    = PyArray_NDIM(obj);    // dimension #
+    npy_intp* d = PyArray_DIMS(obj);    // dims
+    npy_intp* s = PyArray_STRIDES(obj); // strides
+    int typenum = PyArray_TYPE(obj);    // type
 
     if (NPY_FLOAT32 != typenum && NPY_FLOAT64 != typenum) {
         PyErr_SetString(PyExc_TypeError,
-                        "MKLNdarray_ViewromArray: can only copy from float/double arrays");
+                        "MKLNdarray_ViewFromArray: "
+                        "can only view from float/double arrays");
         return -1;
     }
 
     if (ndim < 0 || ndim > MNDA_MAX_NDIM) {
         PyErr_Format(PyExc_ValueError,
-                     "MKLNdarray does not support a %d-dim array. Try array which ndim is <= %d",
+                     "MKLNdarray_ViewFromArray: "
+                     "does not support a %d-dim array. "
+                     "Try array which ndim is <= %d",
                      ndim, MNDA_MAX_NDIM);
         return -1;
     }
 
     self->dtype = typenum;
-    self->nd = ndim;
+    self->nd    = ndim;
 
     size_t dims[MNDA_MAX_NDIM] = {0};
+    size_t strides[MNDA_MAX_NDIM] = {0};
+    size_t user_size = 1;
+
     for (int i = 0; i < ndim; i++) {
         dims[i] = (size_t)d[i];
+        strides[i] = (size_t)s[i] / (typenum == MNDA_FLOAT64 ? 8 : 4);
+        user_size *= dims[i];
     }
 
-    int err = MKLNdarray_set_structure(self, ndim, dims);
+    int err = MKLNdarray_set_structure(self, ndim, dims, strides);
     if (err < 0) {
         return err;
     }
-
+   
     size_t mkl_size[MNDA_MAX_NDIM] = {0};
     size_t mkl_stride[MNDA_MAX_NDIM] = {0};
     for (int i = 0; i < self->nd; i++) {
@@ -940,65 +718,52 @@ int MKLNdarray_ViewFromArray(MKLNdarray *self, PyArrayObject *obj) {
     }
 
     // prepare user layout
+    int status = 0;
     if (MNDA_FLOAT64 == self->dtype) {
-        int status = dnnLayoutCreate_F64(&(self->private_layout),
-                                         ndim,
-                                         mkl_size,
-                                         mkl_stride);
-        if (E_SUCCESS != status || NULL == self->private_layout) {
-            PyErr_Format(PyExc_RuntimeError,
-                         "MKLNdarray_ViewFromArray: Call dnnLayoutCreate_F64 failed: %d",
-                         status);
-            return -1;
-        }
-
-        self->data_size = dnnLayoutGetMemorySize_F64(self->private_layout);
+        status = dnnLayoutCreate_F64(&(self->layout), ndim, mkl_size, mkl_stride);
     } else {  // float32
-        int status = dnnLayoutCreate_F32(&(self->private_layout),
-                                         ndim,
-                                         mkl_size,
-                                         mkl_stride);
-        if (E_SUCCESS != status || NULL == self->private_layout) {
-            PyErr_Format(PyExc_RuntimeError,
-                         "MKLNdarray_ViewFromArray: Call dnnLayoutCreate_F32 failed: %d",
-                         status);
-            return -1;
-        }
-
-        self->data_size = dnnLayoutGetMemorySize_F32(self->private_layout);
+        status = dnnLayoutCreate_F32(&(self->layout), ndim, mkl_size, mkl_stride);
     }
 
-    //set base to Ndarray
-    self->base = (PyObject *)obj;
-    Py_INCREF(obj);
+    if (E_SUCCESS != status || NULL == self->layout) {
+        PyErr_Format(PyExc_RuntimeError,
+                     "MKLNdarray_ViewFromArray: Call dnnLayoutCreate failed: %d, "
+                     "line: %d, dtype: %d",
+                     status, __LINE__, self->dtype);
+        return -1;
+    }
 
-    // pointer to Ndarry's buffer
-    self->private_data = PyArray_DATA(obj);
+    PyObject *orig_base = (PyObject*)obj;
+    while (orig_base &&
+            PyArray_Check(orig_base) &&
+            PyArray_BASE((PyArrayObject*)orig_base)) {
+        orig_base = PyArray_BASE((PyArrayObject*)orig_base);
+    }
 
+    self->base  = orig_base;
+    self->data  = (void*)PyArray_DATA((PyArrayObject*)orig_base);
+    self->flag  |= MNDA_VIEW_FROM_NP;
+
+    Py_INCREF(orig_base);
     return 0;
 }
 
-/*
- * Create a MKLNdarray object according to input dims and typenum.
- *
- * Set all elements to zero.
- *
- * n: number of dimension
- * dims: dimension info
- *
- */
+
 PyObject* MKLNdarray_create_with_zeros(int n, const size_t *dims, int typenum) {
     size_t total_elements = 1;
     if (n < 0 || n > MNDA_MAX_NDIM) {
         PyErr_Format(PyExc_ValueError,
-                     "MKLNdarray does not support a %d-dim array. Try array which ndim is <= %d",
+                     "MKLNdarray_create_with_zeros: "
+                     "does not support a %d-dim array. "
+                     "Try array which ndim is <= %d",
                      n, MNDA_MAX_NDIM);
         return NULL;
     }
 
     if (NULL == dims) {
         PyErr_SetString(PyExc_RuntimeError,
-                        "MKLNdarray_create_with_zeros: input dims is NULL");
+                        "MKLNdarray_create_with_zeros: "
+                        "input dims is NULL");
         return NULL;
     }
 
@@ -1036,47 +801,45 @@ PyObject* MKLNdarray_create_with_zeros(int n, const size_t *dims, int typenum) {
     MKLNdarray* rval = (MKLNdarray*)MKLNdarray_New(n, typenum);
     if (!rval) {
         PyErr_SetString(PyExc_RuntimeError,
-                        "MKLNdarray_create_with_zeros: call to New failed");
+                        "MKLNdarray_create_with_zeros: "
+                        "fail to create new instance");
         return NULL;
     }
 
-    if (MKLNdarray_set_structure(rval, n, dims)) {
+    if (MKLNdarray_set_structure(rval, n, dims, NULL)) {
         PyErr_SetString(PyExc_RuntimeError,
-                        "MKLNdarray_create_with_zeros: syncing structure to mkl failed.");
+                        "MKLNdarray_create_with_zeros: "
+                        "syncing structure to mkl failed.");
         Py_DECREF(rval);
         return NULL;
     }
 
     if (MKLNdarray_create_buffer_from_structure(rval)) {
         PyErr_SetString(PyExc_RuntimeError,
-                        "MKLNdarrya_create_with_zeros: create buffer from structure failed.");
+                        "MKLNdarrya_create_with_zeros: "
+                        "create buffer from structure failed.");
         Py_DECREF(rval);
         return NULL;
     }
     // Fill with zeros
-    memset(rval->private_data, 0, rval->data_size);
+    memset(rval->data, 0, rval->data_size);
     return (PyObject*)rval;
 }
 
 
-/*
- * Get shape info of a MKLNdarray instance.
- *
- * Register in MKLNdarray_getset
- *
- * Return a tuple contains dimension info.
- */
 static PyObject*
 MKLNdarray_get_shape(MKLNdarray *self, void *closure) {
     if (NULL == self) {
         PyErr_SetString(PyExc_RuntimeError,
-                        "MKLNdarray_get_shape: input MKLNdarray* self is NULL");
+                        "MKLNdarray_get_shape: "
+                        "input MKLNdarray* self is NULL");
         return NULL;
     }
 
     if (self->nd < 0 || self->dtype < 0) {
         PyErr_SetString(PyExc_RuntimeError,
-                        "MKLNdarray_get_shape: MKLNdarray not initialized");
+                        "MKLNdarray_get_shape: "
+                        "MKLNdarray is not initialized");
         return NULL;
     }
 
@@ -1096,25 +859,51 @@ MKLNdarray_get_shape(MKLNdarray *self, void *closure) {
 }
 
 
-/*
- * Get dtype info of a MKLNdarray instance.
- *
- * Register in MKLNdarray_getset
- *
- * Return a string: 'float32' or 'float64'.
- *
- */
 static PyObject*
-MKLNdarray_get_dtype(MKLNdarray *self, void *closure) {
+MKLNdarray_get_strides(MKLNdarray *self, void *closure) {
     if (NULL == self) {
         PyErr_SetString(PyExc_RuntimeError,
-                        "MKLNdarray_get_dtype: input MKLNdarray* self is NULL");
+                        "MKLNdarray_get_strides: "
+                        "input MKLNdarray* self is NULL");
         return NULL;
     }
 
     if (self->nd < 0 || self->dtype < 0) {
         PyErr_SetString(PyExc_RuntimeError,
-                        "MKLNdarray_get_dtype: MKLNdarray not initialized");
+                        "MKLNdarray_get_strides: "
+                        "MKLNdarray is not initialized");
+        return NULL;
+    }
+
+    PyObject* rval = PyTuple_New(self->nd);
+    if (NULL == rval) {
+        return NULL;
+    }
+
+    for (int i = 0; i < self->nd; i++) {
+        if (PyTuple_SetItem(rval, i, PyInt_FromLong(MKLNdarray_STRIDES(self)[i]))) {
+            Py_XDECREF(rval);
+            return NULL;
+        }
+    }
+
+    return rval;
+}
+
+
+static PyObject*
+MKLNdarray_get_dtype(MKLNdarray *self, void *closure) {
+    if (NULL == self) {
+        PyErr_SetString(PyExc_RuntimeError,
+                        "MKLNdarray_get_dtype: "
+                        "input MKLNdarray* self is NULL");
+        return NULL;
+    }
+
+    if (self->nd < 0 || self->dtype < 0) {
+        PyErr_SetString(PyExc_RuntimeError,
+                        "MKLNdarray_get_dtype: "
+                        "MKLNdarray is not initialized");
         return NULL;
     }
 
@@ -1123,19 +912,12 @@ MKLNdarray_get_dtype(MKLNdarray *self, void *closure) {
 }
 
 
-/*
- * Get ndim info of a MKLNdarray instance.
- *
- * Register in MKLNdarray_getset
- *
- * Return a integer number. If self is not initialized, -1 will be returned.
- *
- */
 static PyObject*
 MKLNdarray_get_ndim(MKLNdarray *self, void *closure) {
     if (NULL == self) {
         PyErr_SetString(PyExc_RuntimeError,
-                        "MKLNdarray_get_ndim: input MKLNdarray* self is NULL");
+                        "MKLNdarray_get_ndim: "
+                        "input MKLNdarray* self is NULL");
         return NULL;
     } else {
         return PyInt_FromLong(self->nd);
@@ -1143,20 +925,13 @@ MKLNdarray_get_ndim(MKLNdarray *self, void *closure) {
 }
 
 
-/*
- * Get size info of a MKLNdarray instance.
- *
- * Register in MKLNdarray_getset
- *
- * Return a integer number.
- *
- */
 static PyObject*
 MKLNdarray_get_size(MKLNdarray *self, void *closure) {
     size_t total_element = 1;
     if (NULL == self) {
         PyErr_SetString(PyExc_RuntimeError,
-                        "MKLNdarray_get_size: input MKLNdarray* self is NULL");
+                        "MKLNdarray_get_size: "
+                        "input MKLNdarray* self is NULL");
         return NULL;
     }
 
@@ -1171,19 +946,12 @@ MKLNdarray_get_size(MKLNdarray *self, void *closure) {
 }
 
 
-/*
- * Get base info of a MKLNdarray instance.
- *
- * Register in MKLNdarray_getset
- *
- * Return a PyObject.
- *
- */
 static PyObject*
 MKLNdarray_get_base(MKLNdarray *self, void *closure) {
     if (NULL == self) {
         PyErr_SetString(PyExc_RuntimeError,
-                        "MKLNdarray_get_base: input MKLNdarray* self is NULL");
+                        "MKLNdarray_get_base: "
+                        "input MKLNdarray* self is NULL");
         return NULL;
     }
 
@@ -1197,21 +965,20 @@ MKLNdarray_get_base(MKLNdarray *self, void *closure) {
 }
 
 
-/*
- * Create a PyArrayObject from a MKLNdarray.
- */
-PyObject* MKLNdarray_CreateArrayObj(MKLNdarray *self) {
+PyObject* MKLNdarray_CreateArrayObj(const MKLNdarray *self) {
     if (NULL == self) {
         PyErr_SetString(PyExc_RuntimeError,
-                        "MKLNdarray_CreateArrayObj: input MKLNdarray* self is NULL");
+                        "MKLNdarray_CreateArrayObj: "
+                        "input MKLNdarray* self is NULL");
         return NULL;
     }
 
     if (self->nd < 0 ||
-        NULL == self->private_data ||
-        NULL == self->private_layout) {
+        NULL == self->layout ||
+        NULL == self->data) {
         PyErr_SetString(PyExc_RuntimeError,
-                        "MKLNdarray_CreateArrayObj: Can't convert from an uninitialized MKLNdarray");
+                        "MKLNdarray_CreateArrayObj: "
+                        "Can't convert from an uninitialized MKLNdarray");
         return NULL;
     }
 
@@ -1222,10 +989,8 @@ PyObject* MKLNdarray_CreateArrayObj(MKLNdarray *self) {
 
     PyArrayObject* rval = NULL;
     if (MNDA_FLOAT64 == self->dtype) {
-        // float64
         rval = (PyArrayObject*)PyArray_SimpleNew(self->nd, npydims, NPY_FLOAT64);
     } else {
-        // float32
         rval = (PyArrayObject*)PyArray_SimpleNew(self->nd, npydims, NPY_FLOAT32);
     }
 
@@ -1234,9 +999,9 @@ PyObject* MKLNdarray_CreateArrayObj(MKLNdarray *self) {
     }
 
     void* rval_data = PyArray_DATA(rval);
-    dnnLayout_t layout_user = NULL;
     int status = -1;
     dnnPrimitive_t primitive = NULL;
+    dnnLayout_t layout_user = NULL;
 
     size_t mkl_size[MNDA_MAX_NDIM] = {0};
     size_t mkl_stride[MNDA_MAX_NDIM] = {0};
@@ -1244,7 +1009,7 @@ PyObject* MKLNdarray_CreateArrayObj(MKLNdarray *self) {
     // nchw -> whcn
     for (int i = 0; i < self->nd; i++) {
         mkl_size[i] = (MKLNdarray_DIMS(self))[self->nd - i - 1];
-        mkl_stride[i] = (MKLNdarray_STRIDES(self))[self->nd - i -1];
+        mkl_stride[i] = (MKLNdarray_STRIDES(self))[self->nd - i - 1];
     }
 
     if (MNDA_FLOAT64 == self->dtype) { // float64
@@ -1255,17 +1020,19 @@ PyObject* MKLNdarray_CreateArrayObj(MKLNdarray *self) {
 
         if (E_SUCCESS != status || NULL == layout_user) {
             PyErr_Format(PyExc_RuntimeError,
-                         "MKLNdarray_CreateArrayObj: dnnLayoutCreate_F64 failed: %d, line: %d",
+                         "MKLNdarray_CreateArrayObj: "
+                         "dnnLayoutCreate_F64 failed: %d, line: %d",
                          status, __LINE__);
             Py_DECREF(rval);
             return NULL;
         }
 
-        if (!dnnLayoutCompare_F64(self->private_layout, layout_user)) {
-            status = dnnConversionCreate_F64(&primitive, self->private_layout, layout_user);
+        if (!dnnLayoutCompare_F64(self->layout, layout_user)) {
+            status = dnnConversionCreate_F64(&primitive, self->layout, layout_user);
             if (E_SUCCESS != status || NULL == primitive) {
                 PyErr_Format(PyExc_RuntimeError,
-                             "MKLNdarray_CreateArrayObj: dnnConversionCreate_F64 failed: %d, line: %d",
+                             "MKLNdarray_CreateArrayObj: "
+                             "dnnConversionCreate_F64 failed: %d, line: %d",
                              status, __LINE__);
                 Py_DECREF(rval);
                 if (NULL != layout_user) {
@@ -1275,16 +1042,18 @@ PyObject* MKLNdarray_CreateArrayObj(MKLNdarray *self) {
                 return NULL;
             }
 
-            status = dnnConversionExecute_F64(primitive, (void*)self->private_data, (void*)rval_data);
+            status = dnnConversionExecute_F64(primitive, (void*)self->data, (void*)rval_data);
             if (E_SUCCESS != status) {
                 PyErr_Format(PyExc_RuntimeError,
-                             "MKLNdarray_CreateArrayObj: dnnConversionExecute_F64 failed: %d, line: %d",
+                             "MKLNdarray_CreateArrayObj: "
+                             "dnnConversionExecute_F64 failed: %d, line: %d",
                              status, __LINE__);
                 Py_DECREF(rval);
                 if (NULL != layout_user) {
                     dnnLayoutDelete_F64(layout_user);
                     layout_user = NULL;
                 }
+                
                 if (NULL != primitive) {
                     dnnDelete_F64(primitive);
                     primitive = NULL;
@@ -1292,13 +1061,14 @@ PyObject* MKLNdarray_CreateArrayObj(MKLNdarray *self) {
                 return NULL;
             }
         } else {
-            memcpy((void*)rval_data, (void*)self->private_data, PyArray_SIZE(rval) * sizeof (double));
+            memcpy((void*)rval_data, (void*)self->data, PyArray_SIZE(rval) * sizeof (double)); 
         }
 
         if (NULL != layout_user) {
             dnnLayoutDelete_F64(layout_user);
             layout_user = NULL;
         }
+
         if (NULL != primitive) {
             dnnDelete_F64(primitive);
             primitive = NULL;
@@ -1312,17 +1082,19 @@ PyObject* MKLNdarray_CreateArrayObj(MKLNdarray *self) {
 
         if (E_SUCCESS != status || NULL == layout_user) {
             PyErr_Format(PyExc_RuntimeError,
-                         "MKLNdarray_CreateArrayObj: dnnLayoutCreate_F32 failed: %d, line: %d",
+                         "MKLNdarray_CreateArrayObj: "
+                         "dnnLayoutCreate_F32 failed: %d, line: %d",
                          status, __LINE__);
             Py_DECREF(rval);
             return NULL;
         }
 
-        if (!dnnLayoutCompare_F32(self->private_layout, layout_user)) {
-            status = dnnConversionCreate_F32(&primitive, self->private_layout, layout_user);
+        if (!dnnLayoutCompare_F32(self->layout, layout_user)) {
+            status = dnnConversionCreate_F32(&primitive, self->layout, layout_user);
             if (E_SUCCESS != status || NULL == primitive) {
                 PyErr_Format(PyExc_RuntimeError,
-                             "MKLNdarray_CreateArrayObj: dnnConversionCreate_F32 failed: %d, line: %d",
+                             "MKLNdarray_CreateArrayObj: "
+                             "dnnConversionCreate_F32 failed: %d, line: %d",
                              status, __LINE__);
                 Py_DECREF(rval);
                 if (NULL != layout_user) {
@@ -1332,16 +1104,18 @@ PyObject* MKLNdarray_CreateArrayObj(MKLNdarray *self) {
                 return NULL;
             }
 
-            status = dnnConversionExecute_F32(primitive, (void*)self->private_data, (void*)rval_data);
+            status = dnnConversionExecute_F32(primitive, (void*)self->data, (void*)rval_data);
             if (E_SUCCESS != status) {
                 PyErr_Format(PyExc_RuntimeError,
-                             "MKLNdarray_CreateArrayObj: dnnConversionExecute_F32 failed: %d, line: %d",
+                             "MKLNdarray_CreateArrayObj: "
+                             "dnnConversionExecute_F32 failed: %d, line: %d",
                              status, __LINE__);
                 Py_DECREF(rval);
                 if (NULL != layout_user) {
                     dnnLayoutDelete_F32(layout_user);
                     layout_user = NULL;
                 }
+
                 if (NULL != primitive) {
                     dnnDelete_F32(primitive);
                     primitive = NULL;
@@ -1349,13 +1123,14 @@ PyObject* MKLNdarray_CreateArrayObj(MKLNdarray *self) {
                 return NULL;
             }
         } else {
-            memcpy((void*)rval_data, (void*)self->private_data, PyArray_SIZE(rval) * sizeof (float));
+            memcpy((void*)rval_data, (void*)self->data, PyArray_SIZE(rval) * sizeof (float));
         }
 
         if (NULL != layout_user) {
             dnnLayoutDelete_F32(layout_user);
             layout_user = NULL;
         }
+
         if (NULL != primitive) {
             dnnDelete_F32(primitive);
             primitive = NULL;
@@ -1366,19 +1141,11 @@ PyObject* MKLNdarray_CreateArrayObj(MKLNdarray *self) {
 }
 
 
-/*
- * Create a new MKLNdarray instance and set all elements to zero.
- * This function will be called when do MKLNdarray.zeros(shape, typenum) in python code.
- *
- * shape: a tuple contains shape info. length of shape should <= MNDA_MAX_NDIM
- * typenum: MNDA_FLOAT32, MNDA_FLOAT64. MNDA_FLOAT32 by default.
- *
- * This function will call MKLNdarray_create_with_zeros to do detailed processing.
- *
- */
 PyObject* MKLNdarray_Zeros(PyObject *_unused, PyObject *args) {
     if (!args) {
-        PyErr_SetString(PyExc_TypeError, "MKLNdarray_Zeros: function takes at least 1 argument");
+        PyErr_SetString(PyExc_TypeError,
+                        "MKLNdarray_Zeros: "
+                        "function takes at least 1 argument");
         return NULL;
     }
 
@@ -1386,7 +1153,8 @@ PyObject* MKLNdarray_Zeros(PyObject *_unused, PyObject *args) {
     int typenum = -1;
 
     if (!PyArg_ParseTuple(args, "Oi", &shape, &typenum)) {
-        PyErr_SetString(PyExc_RuntimeError, "MKLNdarray_Zeros: PyArg_ParseTuple failed \n");
+        PyErr_SetString(PyExc_RuntimeError,
+                        "MKLNdarray_Zeros: PyArg_ParseTuple failed \n");
         return NULL;
     }
 
@@ -1395,22 +1163,26 @@ PyObject* MKLNdarray_Zeros(PyObject *_unused, PyObject *args) {
     }
 
     if (!PySequence_Check(shape)) {
-        PyErr_SetString(PyExc_TypeError, "shape argument must be a sequence");
+        PyErr_SetString(PyExc_TypeError,
+                        "shape argument must be a sequence");
         return NULL;
     }
-
+    
     int shplen = PySequence_Length(shape);
     if (shplen <= 0 || shplen > MNDA_MAX_NDIM) {
-        PyErr_Format(PyExc_TypeError, "length of shape argument must be 1 ~ %d",
+        PyErr_Format(PyExc_TypeError,
+                     "length of shape argument must be 1 ~ %d",
                      MNDA_MAX_NDIM);
         return NULL;
     }
-
+    
     size_t newdims[MNDA_MAX_NDIM] = {0};
-    for (int i = shplen -1; i >= 0; i--) {
+    for (int i = shplen - 1; i >= 0; i--) {
         PyObject* shp_el_obj = PySequence_GetItem(shape, i);
         if (NULL == shp_el_obj) {
-            PyErr_SetString(PyExc_RuntimeError, "MKLNdarray_Zeros: index out of bound in sequence");
+            PyErr_SetString(PyExc_RuntimeError,
+                            "MKLNdarray_Zeros: "
+                            "index out of bound in sequence");
             return NULL;
         }
 
@@ -1419,7 +1191,8 @@ PyObject* MKLNdarray_Zeros(PyObject *_unused, PyObject *args) {
 
         if (shp_el < 0) {
             PyErr_SetString(PyExc_ValueError,
-                            "MKLNdarray_Zeros: shape must contain only non-negative values for size of a dimension");
+                            "MKLNdarray_Zeros: "
+                            "shape must contain only non-negative values for size of a dimension");
             return NULL;
         }
         newdims[i] = (size_t)shp_el;
@@ -1430,72 +1203,51 @@ PyObject* MKLNdarray_Zeros(PyObject *_unused, PyObject *args) {
 }
 
 
-size_t MKLNdarray_get_memory_size(const MKLNdarray* self, int type)
-{
+size_t MKLNdarray_get_memory_size(const MKLNdarray *self) {
     if (!self) {
         PyErr_SetString(PyExc_RuntimeError,
                         "MKLNdarray_get_memory_size: input is NULL");
         return 0;
     }
 
-    if ((MNDA_DATA != type) && (MNDA_WORKSPACE != type)) {
-        PyErr_Format(PyExc_ValueError,
-                     "MKLNdarray_get_memory_size: input type (%d) is not support",
-                     type);
+    if (NULL == self->layout || NULL == self->data) {
+        PyErr_SetString(PyExc_RuntimeError,
+                        "MKLNdarray_get_memory_size: input object doesn't have "
+                        "layout and data buffer");
         return 0;
     }
 
     size_t data_size = 0;
-    const dnnLayout_t* layout = NULL;
-    if (MNDA_DATA == type) {
-        if (NULL != self->private_layout) {
-            layout = &(self->private_layout);
-        }
-        else
-            return 0;
-    } else {
-        if (NULL != self->private_layout_ws) {
-            layout = &(self->private_layout_ws);
-        }
-        else
-            return 0;
-    }
-
     if (MNDA_FLOAT64 == self->dtype) {
-        data_size = dnnLayoutGetMemorySize_F64(*layout);
+        data_size = dnnLayoutGetMemorySize_F64(self->layout);
     } else {
-        data_size = dnnLayoutGetMemorySize_F32(*layout);
+        data_size = dnnLayoutGetMemorySize_F32(self->layout);
     }
 
     return data_size;
 }
 
 
-/*
- * Create a view for input MKLNdarray.
- *
- * The view has same nd/dtype/user_structure with input MKLNdarray.
- *
- * The view's layout and data buffer are pointed to those of input.
- *
- */
 MKLNdarray* MKLNdarray_View(const MKLNdarray *self) {
     if (NULL == self) {
         PyErr_SetString(PyExc_RuntimeError, "MKLNdarray_View: input is NULL");
         return NULL;
     }
 
-    MKLNdarray *rval = (MKLNdarray*)MKLNdarray_New(self->nd, self->dtype);
+    MKLNdarray *rval = (MKLNdarray*)MKLNdarray_New(MKLNdarray_NDIM(self), 
+                                                   MKLNdarray_TYPE(self));
     if (!rval) {
         rval = NULL;
     } else {
-        int ret = MKLNdarray_set_structure(rval, self->nd, MKLNdarray_DIMS(self));
+        int ret = MKLNdarray_set_structure(rval,
+                                           MKLNdarray_NDIM(self),
+                                           MKLNdarray_DIMS(self),
+                                           MKLNdarray_STRIDES(self));
         if (0 != ret) {
             Py_DECREF(rval);
             rval = NULL;
         } else {
             rval->data_size = 0;
-            rval->workspace_size = 0;
 
             PyObject *orig_base = (PyObject*)self;
             while (orig_base &&
@@ -1504,11 +1256,12 @@ MKLNdarray* MKLNdarray_View(const MKLNdarray *self) {
                 orig_base = ((MKLNdarray*)orig_base)->base;
             }
 
-            rval->base              = orig_base;
-            rval->private_layout    = ((MKLNdarray*)orig_base)->private_layout;
-            rval->private_data      = ((MKLNdarray*)orig_base)->private_data;
-            rval->private_layout_ws = ((MKLNdarray*)orig_base)->private_layout_ws;
-            rval->private_workspace = ((MKLNdarray*)orig_base)->private_workspace;
+            rval->base      = orig_base;
+            rval->data_size = ((MKLNdarray*)orig_base)->data_size;
+            rval->layout    = ((MKLNdarray*)orig_base)->layout;
+            rval->data      = ((MKLNdarray*)orig_base)->data;
+            rval->flag      |= MNDA_VIEW_FROM_MKL;
+
             Py_INCREF(orig_base);
         }
     }
@@ -1516,18 +1269,14 @@ MKLNdarray* MKLNdarray_View(const MKLNdarray *self) {
 }
 
 
-/*
- * This function creates a new MKLNdarray with same nd/dtype/user_structure with
- * input MKLNdarray, and copies layout and data buffer from input MKLndarray to
- * the new MKLNdarray.
- */
 MKLNdarray * MKLNdarray_Copy(MKLNdarray *self) {
     if (NULL == self) {
         PyErr_SetString(PyExc_RuntimeError, "MKLNdarray_Copy: input is NULL");
         return NULL;
     }
 
-    MKLNdarray *rval = (MKLNdarray*)MKLNdarray_New(self->nd, self->dtype);
+    MKLNdarray *rval = (MKLNdarray*)MKLNdarray_New(MKLNdarray_NDIM(self),
+                                                   MKLNdarray_TYPE(self));
     if (!rval || (-1 == self->nd)) {
         PyErr_SetString(PyExc_RuntimeError,
                 "MKLNdarray_Copy: fail to new MKLNdarray");
@@ -1536,51 +1285,35 @@ MKLNdarray * MKLNdarray_Copy(MKLNdarray *self) {
         return NULL;
     }
 
-    int ret = MKLNdarray_set_structure(rval, self->nd, MKLNdarray_DIMS(self));
+    int ret = MKLNdarray_set_structure(rval,
+                                       MKLNdarray_NDIM(self),
+                                       MKLNdarray_DIMS(self),
+                                       MKLNdarray_STRIDES(self));
     if (ret) {
         Py_DECREF(rval);
         return NULL;
     }
 
-    assert (self->nd == rval->nd);
-
-    if (self->private_layout) {
-        ret = MKLNdarray_copy_layout(rval, self, MNDA_DATA);
+    rval->data_size = 0;
+    if (self->layout) {
+        ret = MKLNdarray_copy_layout(rval, self);
         if (ret) {
             Py_DECREF(rval);
             return NULL;
         }
     }
-
+    
     size_t data_size = 0;
-    if (rval->private_layout && self->private_data) {
-        ret = MKLNdarray_create_buffer_from_layout(rval, MNDA_DATA);
+    if (rval->layout && self->data) {
+        ret = MKLNdarray_create_buffer_from_layout(rval);
         if (ret) {
             Py_DECREF(rval);
             return NULL;
         }
-        data_size = MKLNdarray_get_memory_size(rval, MNDA_DATA);
-        memcpy(rval->private_data, self->private_data, data_size);
-    }
 
-    if (self->private_layout_ws) {
-        ret = MKLNdarray_copy_layout(rval, self, MNDA_WORKSPACE);
-        if (ret) {
-            Py_DECREF(rval);
-            return NULL;
-        }
+        data_size = MKLNdarray_get_memory_size(rval);
+        memcpy(rval->data, self->data, data_size);
     }
-
-    if (rval->private_layout_ws && self->private_workspace) {
-        ret = MKLNdarray_create_buffer_from_layout(rval, MNDA_WORKSPACE);
-        if (ret) {
-            Py_DECREF(rval);
-            return NULL;
-        }
-        data_size = MKLNdarray_get_memory_size(rval, MNDA_WORKSPACE);
-        memcpy (rval->private_workspace, self->private_workspace, data_size);
-    }
-
     return rval;
 }
 
@@ -1614,18 +1347,10 @@ PyObject * MKLNdarray_DeepCopy(MKLNdarray *self, PyObject *memo) {
     }
 }
 
-/*
- * type:tp_methods
- * Describe methos of a type. ml_name/ml_meth/ml_flags/ml_doc.
- * ml_name: name of method
- * ml_meth: PyCFunction, point to the C implementation
- * ml_flags: indicate how the call should be constructed
- * ml_doc: docstring
- *
- */
+
 static PyMethodDef MKLNdarray_methods[] = {
     {"__array__",
-        (PyCFunction)MKLNdarray_CreateArrayObj, METH_VARARGS,
+        (PyCFunction)MKLNdarray_CreateArrayObj, METH_NOARGS,
         "Copy from MKL to a numpy ndarray."},
 
     {"zeros",
@@ -1652,24 +1377,22 @@ static PyMethodDef MKLNdarray_methods[] = {
 };
 
 
-/* type:tp_members
- * Describe attributes of a type. name/type/offset/flags/doc.
- */
 static PyMemberDef MKLNdarray_members[] = {
     {NULL}      /* Sentinel */
 };
 
 
-/*
- * type:tp_getset
- * get/set attribute of instances of this type. name/getter/setter/doc/closure
- *
- */
 static PyGetSetDef MKLNdarray_getset[] = {
     {"shape",
         (getter)MKLNdarray_get_shape,
         NULL,
         "shape of this ndarray (tuple)",
+        NULL},
+
+    {"strides",
+        (getter)MKLNdarray_get_strides,
+        NULL,
+        "strides of this ndarray (tuple)",
         NULL},
 
     {"dtype",
@@ -1700,11 +1423,6 @@ static PyGetSetDef MKLNdarray_getset[] = {
 };
 
 
-/*
- * type object.
- * If you want to define a new object type, you need to create a new type object.
- *
- */
 static PyTypeObject MKLNdarrayType = {
 #if PY_MAJOR_VERSION >= 3
     PyVarObject_HEAD_INIT(NULL, 0)
@@ -1756,60 +1474,54 @@ static PyTypeObject MKLNdarrayType = {
 };
 
 
-/*
- * Check an input is an instance of MKLNdarray or not.
- * Same as PyArray_Check
- *
- */
 int MKLNdarray_Check(const PyObject *ob) {
     return ((Py_TYPE(ob) == &MKLNdarrayType) ? 1 : 0);
 }
 
 
-/*
- * Try to new a MKLNdarray instance.
- * This function is different from MKLNdarray_new which is set for tp_new.
- *
- * MKLNdarray_new is call by python when python has allocate memory for it already.
- * MKLNdarray_New will be called manually in C/C++ code, so we need to call tp_alloc manually.
- *
- */
 PyObject*
 MKLNdarray_New(int nd, int typenum) {
     if (nd < 0 || nd > MNDA_MAX_NDIM) {
         PyErr_Format(PyExc_ValueError,
-                     "MKLNdarray_New: not support a %d-dim array. Try array which ndim is <= %d. line: %d",
+                     "MKLNdarray_New: not support a %d-dim array. "
+                     "Try array which ndim is <= %d. line: %d",
                      nd, MNDA_MAX_NDIM, __LINE__);
+        return NULL;
+    }
+
+    if (typenum != MNDA_FLOAT32 && typenum != MNDA_FLOAT64) {
+        PyErr_Format(PyExc_ValueError,
+                     "MKLNdarray_New: not support dtype=%d, "
+                     "Try MNDA_FLOAT32 or MNDA_FLOAT64.",
+                     typenum);
         return NULL;
     }
 
     MKLNdarray* self = (MKLNdarray*)(MKLNdarrayType.tp_alloc(&MKLNdarrayType, 0));
     if (NULL == self) {
-        PyErr_SetString(PyExc_RuntimeError, "MKLNdarray_New: failed to allocate self");
+        PyErr_SetString(PyExc_RuntimeError,
+                        "MKLNdarray_New: failed to call tp_alloc");
         return NULL;
     }
-    self->base              = NULL;
-    self->nd                = nd;
-    self->dtype             = typenum;
-    self->private_data      = NULL;
-    self->private_workspace = NULL;
-    self->data_size         = 0;
-    self->workspace_size    = 0;
-    self->private_layout    = NULL;
-    self->private_layout_ws = NULL;
+    self->base      = NULL;
+    self->flag      = 0;
+    self->nd        = nd;
+    self->dtype     = typenum;
+    self->layout    = NULL;
+    self->data      = NULL;
+    self->data_size = 0;
     memset((void*)(self->user_structure), 0, 2 * MNDA_MAX_NDIM * sizeof (size_t));
 
     return (PyObject*)self;
 }
 
 
-/*
- * Declare methods belong to this module but not in MKLNdarray.
- * Used in module initialization function.
- *
- * Users can access these methods by module.method_name() after they have imported this module.
- *
- */
+///////////////////////////////////////////////////////////
+//
+// Module
+//
+///////////////////////////////////////////////////////////
+
 static PyMethodDef module_methods[] = {
     {NULL, NULL, 0, NULL}   /* Sentinel */
 };
@@ -1843,9 +1555,6 @@ initmkl_ndarray(void)
 #endif
     }
 
-    // add attribute to MKLNdarrayType
-    // if user has import MKLNdarrayType already, they can get typenum of float32 and float64
-    // by MKLNdarray.float32 or MKLNdarray.float64
     PyDict_SetItemString(MKLNdarrayType.tp_dict, "float32", PyInt_FromLong(MNDA_FLOAT32));
     PyDict_SetItemString(MKLNdarrayType.tp_dict, "float64", PyInt_FromLong(MNDA_FLOAT64));
 #if PY_MAJOR_VERSION == 3
@@ -1861,7 +1570,7 @@ initmkl_ndarray(void)
 #endif
     }
     Py_INCREF(&MKLNdarrayType);
-    PyModule_AddObject(m, "MKLNdarray", (PyObject*)&MKLNdarrayType);
+    PyModule_AddObject(m, "MKLNdarray",   (PyObject*)&MKLNdarrayType);
 #if PY_MAJOR_VERSION == 3
     return m;
 #else

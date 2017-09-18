@@ -6,6 +6,7 @@ from six import StringIO
 import theano
 from theano import Type, Variable, config, tensor
 from theano.tensor.var import _tensor_py_operators
+from theano.gof.type import CDataType
 
 try:
     import mkl_ndarray
@@ -19,6 +20,8 @@ try:
 except ImportError:
     mkl = None
 
+mklworkspace_type_F32 = CDataType('void *', 'dnnReleaseBuffer_F32', version=(1, 0, 0))
+mklworkspace_type_F64 = CDataType('void *', 'dnnReleaseBuffer_F64', version=(1, 0, 0))
 
 class _operators(_tensor_py_operators):
     dtype = property(lambda s: s.type.dtype)
