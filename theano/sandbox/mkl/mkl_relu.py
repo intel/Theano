@@ -19,7 +19,12 @@ class AbstractRelu(gof.Op):
     def grad(self, inp, grads):
         x, slope, = inp
         gz, = grads
-        return [AbstractReluGrad()(x, slope, gz)]
+        disc = [DisconnectedType()() for i in inp[1:]]
+
+        return [AbstractReluGrad()(x, slope, gz)] + disc
+
+    def connection_pattern(self, node):
+        return [[1], [0]]
 
     def perform(self, node, inp, out_):
         x, slope, = inp

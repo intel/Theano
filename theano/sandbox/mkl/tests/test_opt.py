@@ -162,7 +162,7 @@ def test_mkl_relu_forward():
         x = tensor.ftensor4('x')
     else:
         x = tensor.dtensor4('x')
-    y = mkl.mkl_relu.AbstractRelu(slope=1)(x)
+    y = mkl.mkl_relu.AbstractRelu()(x, 1)
 
     yy = tensor.nnet.relu(x)
 
@@ -176,12 +176,12 @@ def test_mkl_relu_forward():
     assert len(topo) == 3
 
     # U2IRelu
-    assert len(topo[0].inputs) == 1
+    assert len(topo[0].inputs) == 2
     assert isinstance(topo[0].op, U2IRelu)
     assert topo[0].inputs[0] == inputs[0]
     # Relu
     assert isinstance(topo[1].op, mkl.mkl_relu.Relu)
-    assert len(topo[1].inputs) == 1
+    assert len(topo[1].inputs) == 2
     assert topo[1].inputs[0].owner == topo[0]
     # I2U
     assert isinstance(topo[2].op, I2U)
@@ -236,7 +236,7 @@ def test_mkl_pool_relu():
     :return:
     """
     x = tensor.ftensor4('x')
-    y = mkl.mkl_relu.AbstractRelu(slope=1)(x)
+    y = mkl.mkl_relu.AbstractRelu()(x, 1)
     maxpoolshps = ((1, 1), (2, 2), (3, 3), (2, 3))
     # imval = numpy.random.rand(4, 2, 16, 16).astype(theano.config.floatX)
     ignore_border = False
@@ -252,12 +252,12 @@ def test_mkl_pool_relu():
     assert len(topo) == 4
 
     # U2I_Relu
-    assert len(topo[0].inputs) == 1
+    assert len(topo[0].inputs) == 2
     assert isinstance(topo[0].op, U2IRelu)
     assert topo[0].inputs[0] == inputs[0]
     # Relu
     assert isinstance(topo[1].op, mkl.mkl_relu.Relu)
-    assert len(topo[1].inputs) == 1
+    assert len(topo[1].inputs) == 2
     assert topo[1].inputs[0].owner == topo[0]
     # pool
     assert len(topo[2].inputs) == 4
@@ -407,7 +407,7 @@ def test_mkl_3_relu_backward():
         assert isinstance(node.op, predefineOps[i])
 
     # U2IRelu
-    assert len(topo[0].inputs) == 1
+    assert len(topo[0].inputs) == 2
     assert topo[0].inputs[0] == inputs[0]
     # U2IGrad
     assert len(topo[14].inputs) == 2
