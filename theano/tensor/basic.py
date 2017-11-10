@@ -3020,8 +3020,11 @@ def sum(input, axis=None, dtype=None, keepdims=False, acc_dtype=None):
         will broadcast correctly against the original tensor.
 
     """
-
-    out = elemwise.Sum(axis=axis, dtype=dtype, acc_dtype=acc_dtype)(input)
+    if axis is 2 and input.type.ndim is 3:
+        print('theano sum op **********')
+        out = elemwise.Sum_op(dimension=axis, keepdim=True)(input)
+    else:
+        out = elemwise.Sum(axis=axis, dtype=dtype, acc_dtype=acc_dtype)(input)
 
     if keepdims:
         out = makeKeepDims(input, out, axis)
