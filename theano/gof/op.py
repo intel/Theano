@@ -9,7 +9,7 @@ from __future__ import absolute_import, print_function, division
 
 import inspect
 import logging
-import numpy
+import numpy as np
 import os
 import re
 import sys
@@ -19,7 +19,7 @@ import theano
 from theano import config
 
 import theano.gof.cc
-from six import itervalues
+from six import itervalues, PY3
 from theano.gof import graph
 from theano.gof import utils
 from theano.gof.cmodule import GCC_compiler
@@ -31,6 +31,19 @@ __license__ = "3-clause BSD License"
 __contact__ = "theano-dev <theano-dev@googlegroups.com>"
 
 __docformat__ = "restructuredtext en"
+
+_logger = logging.getLogger('theano.gof.op.Op')
+
+
+# Open file in "universal newline mode".
+# In Python 2, this is done by calling open(..., 'U'), but this is
+# deprected in Python 3 (where we would need to pass "newline=None",
+# which is the default).
+if PY3:
+    _open_u = open
+else:
+    def _open_u(file):
+        return open(file, 'U')
 
 
 class CLinkerObject(object):
@@ -139,7 +152,7 @@ class CLinkerObject(object):
 
     def c_support_code(self):
         """
-        Optional: Return utility code for use by a `Variable` or `Op` to be
+        Optional: Return utility code (a string, or a list of strings) for use by a `Variable` or `Op` to be
         included at global scope prior to the rest of the code for this class.
 
         QUESTION: How many times will this support code be emitted for a graph
@@ -429,7 +442,7 @@ class CLinkerOp(CLinkerObject):
             The subclass does not override this method.
 
         """
-        raise utils.MethodNotDefined("c_init_code_apply", type(self),
+        raise utils.MethodNotDefined("c_init_code_struct", type(self),
                                      self.__class__.__name__)
 
     def c_support_code_struct(self, node, name):
@@ -694,6 +707,9 @@ class PureOp(object):
     # Python implementation #
     #########################
 
+    def L_op(self, inputs, outputs, output_grads):
+        return self.grad(inputs, output_grads)
+
     def R_op(self, inputs, eval_points):
         """
         This method is primarily used by tensor.Rop
@@ -779,37 +795,47 @@ class Op(utils.object2, PureOp, CLinkerOp):
     Convenience class to bundle `PureOp` and `CLinkerOp`.
 
     """
-    def __new__(cls, *args, **kwargs):
-        # this function exists to silently and transparently ensure that all
-        # existing Ops get a _op_use_c_code attribute
-        obj = object.__new__(cls)
-        if not hasattr(obj, '_op_use_c_code'):
-            obj._op_use_c_code = theano.config.cxx
-        return obj
 
-    def __init__(self, use_c_code=theano.config.cxx):
-        self._op_use_c_code = use_c_code
+    # We add a default get_params() implementation which will try to detect params from the op
+    # if params_type is set to a ParamsType. If not, we raise a MethodNotDefined exception.
+    def get_params(self, node):
+        if hasattr(self, 'params_type') and isinstance(self.params_type, theano.gof.ParamsType):
+            wrapper = self.params_type
+            if not all(hasattr(self, field) for field in wrapper.fields):
+                # Let's print missing attributes for debugging.
+                not_found = tuple(field for field in wrapper.fields if not hasattr(self, field))
+                raise AttributeError('%s: missing attributes %s for ParamsType.' % (type(self).__name__, not_found))
+            # ParamsType.get_params() will apply filtering to attributes.
+            return self.params_type.get_params(self)
+        raise theano.gof.utils.MethodNotDefined('get_params')
 
-    def prepare_node(self, node, storage_map, compute_map):
+    def prepare_node(self, node, storage_map, compute_map, impl):
         """
         Make any special modifications that the Op needs before doing
         make_thunk().
 
         This can modify the node inplace and should return nothing.
 
+        It can be called multiple time with different impl. It is the
+        op responsibility to don't re-prepare the node when it isn't
+        good to do so.
+
         """
         pass
 
     def make_c_thunk(self, node, storage_map, compute_map, no_recycling):
-        """
-        Like make_thunk, but will only try to make a C thunk.
+        """Like make_thunk, but will only try to make a C thunk.
 
         """
-        logger = logging.getLogger('theano.gof.op.Op')
-
         node_input_storage = [storage_map[r] for r in node.inputs]
         node_output_storage = [storage_map[r] for r in node.outputs]
 
+        e = FunctionGraph(node.inputs, node.outputs)
+        e_no_recycling = [new_o
+                          for (new_o, old_o) in zip(e.outputs, node.outputs)
+                          if old_o in no_recycling]
+        cl = theano.gof.cc.CLinker().accept(e,
+                                            no_recycling=e_no_recycling)
         # float16 gets special treatment since running
         # unprepared C code will get bad results.
         if not getattr(self, '_f16_ok', False):
@@ -818,27 +844,27 @@ class Op(utils.object2, PureOp, CLinkerOp):
 
             if (any(is_f16(i.type) for i in node.inputs) or
                     any(is_f16(o.type) for o in node.outputs)):
+                # get_dynamic_module is a subset of make_thunk that is reused.
+                # This just try to build the c code
+                # It will raise an error for ops
+                # that don't implement c code. In those cases, we
+                # don't want to print a warning.
+                cl.get_dynamic_module()
                 print("Disabling C code for %s due to unsupported "
                       "float16" % (self,))
                 raise NotImplementedError("float16")
-        e = FunctionGraph(node.inputs, node.outputs)
-        e_no_recycling = [new_o
-                          for (new_o, old_o) in zip(e.outputs, node.outputs)
-                          if old_o in no_recycling]
-        cl = theano.gof.cc.CLinker().accept(e,
-                                            no_recycling=e_no_recycling)
-
-        logger.debug('Trying CLinker.make_thunk')
+        _logger.debug('Trying CLinker.make_thunk')
         outputs = cl.make_thunk(input_storage=node_input_storage,
                                 output_storage=node_output_storage)
-        fill_storage, node_input_filters, node_output_filters = outputs
+        thunk, node_input_filters, node_output_filters = outputs
 
         def rval():
-            fill_storage()
+            thunk()
             for o in node.outputs:
                 compute_map[o][0] = True
 
-        rval.cthunk = fill_storage.cthunk
+        rval.thunk = thunk
+        rval.cthunk = thunk.cthunk
         rval.inputs = node_input_storage
         rval.outputs = node_output_storage
         rval.lazy = False
@@ -883,7 +909,8 @@ class Op(utils.object2, PureOp, CLinkerOp):
         rval.lazy = False
         return rval
 
-    def make_thunk(self, node, storage_map, compute_map, no_recycling):
+    def make_thunk(self, node, storage_map, compute_map, no_recycling,
+                   impl=None):
         """
         This function must return a thunk, that is a zero-arguments
         function that encapsulates the computation to be performed
@@ -904,6 +931,9 @@ class Op(utils.object2, PureOp, CLinkerOp):
         no_recycling
             List of variables for which it is forbidden to reuse memory
             allocated by a previous call.
+        impl
+            Currently, None, 'c' or 'py'. If 'c' or 'py' we will only try
+            that version of the code.
 
         Notes
         -----
@@ -913,27 +943,26 @@ class Op(utils.object2, PureOp, CLinkerOp):
         the thunk can potentially cache return values (like CLinker does),
         then it must not do so for variables in the no_recycling list.
 
+        self.prepare_node(node, ...) is always called. If we try 'c' and it
+        fail and we try again 'py', prepare_node will be called twice.
         """
-        logger = logging.getLogger('theano.gof.op.Op')
 
-        self.prepare_node(node, storage_map=storage_map,
-                          compute_map=compute_map)
-
-        if not hasattr(self, '_op_use_c_code'):
-            warnings.warn(
-                "The  __getstate__ method of '%s' is not implemented correctly."
-                " It should keep the attributes added by the base class."
-                " To implement it correctly, it should keep all attributes"
-                " and only remove those it does not want." % (self),
-                stacklevel=2)
-        if getattr(self, '_op_use_c_code', theano.config.cxx):
+        if (impl is None and theano.config.cxx) or impl == 'c':
+            self.prepare_node(node, storage_map=storage_map,
+                              compute_map=compute_map, impl='c')
             try:
                 return self.make_c_thunk(node, storage_map, compute_map,
                                          no_recycling)
             except (NotImplementedError, utils.MethodNotDefined):
-                logger.debug('Falling back on perform')
+                # We requested the c code, so don't catch the error.
+                if impl == 'c':
+                    raise
+                _logger.debug('Falling back on perform')
 
-        # condition: either there was no c_code, or it failed
+        # condition: either there was no c_code, or it failed or
+        # python code was requested.
+        self.prepare_node(node, storage_map=storage_map,
+                          compute_map=compute_map, impl='py')
         return self.make_py_thunk(node, storage_map, compute_map, no_recycling)
 
     def make_node(self, *inputs):
@@ -1196,9 +1225,9 @@ int main( int argc, const char* argv[] )
                 self.openmp = False
                 theano.config.openmp = False
 
-    def prepare_node(self, node, storage_map,
-                     compute_map):
-        self.update_self_openmp()
+    def prepare_node(self, node, storage_map, compute_map, impl):
+        if impl == 'c':
+            self.update_self_openmp()
 
 
 def simple_meth(tag):
@@ -1218,8 +1247,8 @@ def apply_meth(tag):
             code = self.code_sections[tag]
 
             define_macros, undef_macros = self.get_c_macros(node, name)
-            return os.linesep.join(['', define_macros, code,
-                                    undef_macros])
+            return '\n'.join(['', define_macros, code,
+                              undef_macros])
         else:
             raise utils.MethodNotDefined(
                 'c_' + tag, type(self), type(self).__name__)
@@ -1272,10 +1301,11 @@ class COp(Op):
         if not isinstance(func_files, list):
             func_files = [func_files]
 
-        self.func_files = [self.get_path(f) for f in func_files]
         self.func_name = func_name
-
-        self.load_c_code()
+        # Keep the original name. If we reload old pickle, we want to
+        # find the new path and new version of the file in Theano.
+        self.func_files = func_files
+        self.load_c_code(func_files)
 
         if len(self.code_sections) == 0:
             raise ValueError("No sections where defined in C files")
@@ -1290,13 +1320,15 @@ class COp(Op):
                 raise ValueError('Cannot have an "op_code_cleanup" section '
                                  'and specify the func_name')
 
-    def load_c_code(self):
+    def load_c_code(self, func_files):
         """
         Loads the c code to perform the Op
         """
+        func_files = [self.get_path(f) for f in func_files]
         self.func_codes = []
-        for func_file in self.func_files:
-            with open(func_file, 'r') as f:
+        for func_file in func_files:
+            # U (universal) will convert all new lines format to \n.
+            with _open_u(func_file) as f:
                 self.func_codes.append(f.read())
 
         # If both the old section markers and the new section markers are
@@ -1338,7 +1370,7 @@ class COp(Op):
                 if split[0].strip() != '':
                     raise ValueError('Stray code before first #section '
                                      'statement (in file %s): %s' %
-                                     (self.func_files[i], split[0]))
+                                     (func_files[i], split[0]))
 
                 # Separate the code into the proper sections
                 n = 1
@@ -1346,7 +1378,7 @@ class COp(Op):
                     if split[n] not in self.SECTIONS:
                         raise ValueError(
                             "Unknown section type (in file %s): %s" %
-                            (self.func_files[i], split[n]))
+                            (func_files[i], split[n]))
                     if split[n] not in self.code_sections:
                         self.code_sections[split[n]] = ""
                     self.code_sections[split[n]] += split[n + 1]
@@ -1354,22 +1386,46 @@ class COp(Op):
 
             else:
                 raise ValueError("No valid section marker was found in file "
-                                 "%s" % self.func_files[i])
+                                 "%s" % func_files[i])
 
-    def get_op_params(self):
+    def __get_op_params(self):
         """
         Returns a list of (name, value) pairs that will be turned into
-        macros for use within the op code. This is intended to allow
-        an op's properties to influence the generated C code.
+        macros for use within the op code.
 
         The names must be strings that are not a C keyword and the
         values must be strings of literal C representations.
 
+        If op uses a :class:`theano.gof.params_type.ParamsType` as ``params_type``,
+        it returns:
+         - a default macro ``PARAMS_TYPE`` which defines the class name of the
+           corresponding C struct.
+         - a macro ``DTYPE_PARAM_key`` for every ``key`` in the ParamsType for which associated
+           type implements the method :func:`theano.gof.type.CLinkerType.c_element_type`.
+           ``DTYPE_PARAM_key`` defines the primitive C type name of an item in a variable
+           associated to ``key``.
+
         """
+        if hasattr(self, 'params_type') and isinstance(self.params_type, theano.gof.ParamsType):
+            wrapper = self.params_type
+            params = [('PARAMS_TYPE', wrapper.name)]
+            for i in range(wrapper.length):
+                try:
+                    # NB (reminder): These macros are currently used only in ParamsType example test
+                    # (`theano/gof/tests/test_quadratic_function.c`), to demonstrate how we can
+                    # access params dtypes when dtypes may change (e.g. if based on theano.config.floatX).
+                    # But in practice, params types generally have fixed types per op.
+                    params.append(('DTYPE_PARAM_' + wrapper.fields[i], wrapper.types[i].c_element_type()))
+                except utils.MethodNotDefined:
+                    pass
+            return params
         return []
 
     def c_code_cache_version(self):
-        return hash(tuple(self.func_codes))
+        version = (hash(tuple(self.func_codes)), )
+        if hasattr(self, 'params_type'):
+            version += (self.params_type.c_code_cache_version(), )
+        return version
 
     def c_init_code(self):
         """
@@ -1430,7 +1486,7 @@ class COp(Op):
                     (macro_name, macro_value))
                 undef_macros.append(undef_template % macro_name)
 
-                d = numpy.dtype(v.dtype)
+                d = np.dtype(v.dtype)
 
                 macro_name = "TYPENUM_" + vname
                 macro_value = d.num
@@ -1453,11 +1509,11 @@ class COp(Op):
                                                 "str##_%s" % name))
         undef_macros.append(undef_template % "APPLY_SPECIFIC")
 
-        for n, v in self.get_op_params():
+        for n, v in self.__get_op_params():
             define_macros.append(define_template % (n, v))
             undef_macros.append(undef_template % (n,))
 
-        return os.linesep.join(define_macros), os.linesep.join(undef_macros)
+        return '\n'.join(define_macros), '\n'.join(undef_macros)
 
     def _lquote_macro(self, txt):
         res = []
@@ -1465,7 +1521,7 @@ class COp(Op):
         for l in spl[:-1]:
             res.append(l + ' \\')
         res.append(spl[-1])
-        return os.linesep.join(res)
+        return '\n'.join(res)
 
     def get_sub_macros(self, sub):
         define_macros = []
@@ -1477,7 +1533,7 @@ class COp(Op):
             define_macros.append("#define PARAMS %s" % (sub['params'],))
             undef_macros.append("#undef PARAMS")
 
-        return os.linesep.join(define_macros), os.linesep.join(undef_macros)
+        return '\n'.join(define_macros), '\n'.join(undef_macros)
 
     def get_io_macros(self, inputs, outputs):
         define_macros = []
@@ -1502,9 +1558,9 @@ class COp(Op):
             def_macros, undef_macros = self.get_c_macros(node, name)
             def_sub, undef_sub = self.get_sub_macros(sub)
 
-            return os.linesep.join(['', def_macros, def_sub,
-                                    op_code,
-                                    undef_sub, undef_macros])
+            return '\n'.join(['', def_macros, def_sub,
+                              op_code,
+                              undef_sub, undef_macros])
         else:
             raise utils.MethodNotDefined(
                 'c_init_code_struct', type(self), type(self).__name__)
@@ -1542,9 +1598,9 @@ class COp(Op):
                 def_sub, undef_sub = self.get_sub_macros(sub)
                 def_io, undef_io = self.get_io_macros(inp, out)
 
-                return os.linesep.join([def_macros, def_sub, def_io,
-                                        op_code,
-                                        undef_io, undef_sub, undef_macros])
+                return '\n'.join([def_macros, def_sub, def_io,
+                                  op_code,
+                                  undef_io, undef_sub, undef_macros])
             else:
                 raise utils.MethodNotDefined(
                     'c_code', type(self), type(self).__name__)
@@ -1560,9 +1616,9 @@ class COp(Op):
             def_sub, undef_sub = self.get_sub_macros(sub)
             def_io, undef_io = self.get_io_macros(inputs, outputs)
 
-            return os.linesep.join([def_macros, def_sub, def_io,
-                                    op_code,
-                                    undef_io, undef_sub, undef_macros])
+            return '\n'.join([def_macros, def_sub, def_io,
+                              op_code,
+                              undef_io, undef_sub, undef_macros])
         else:
             raise utils.MethodNotDefined(
                 'c_code_cleanup', type(self), type(self).__name__)

@@ -1,9 +1,9 @@
-"""Some pickle test when pygpu isn't there. The test when pygpu is
+"""
+Some pickle test when pygpu isn't there. The test when pygpu is
 available are in test_type.py.
 
 This is needed as we skip all the test file when pygpu isn't there in
 regular test file.
-
 """
 from __future__ import absolute_import, print_function, division
 import os
@@ -12,7 +12,7 @@ from six import reraise
 
 from nose.plugins.skip import SkipTest
 from nose.tools import assert_raises
-import numpy
+import numpy as np
 
 from theano.compat import PY3
 from theano import config
@@ -75,7 +75,7 @@ def test_unpickle_gpuarray_as_numpy_ndarray_flag2():
                     reraise(SkipTest, exc_value, exc_trace)
                 raise
 
-        assert isinstance(mat, numpy.ndarray)
+        assert isinstance(mat, np.ndarray)
         assert mat[0] == -42.0
 
     finally:

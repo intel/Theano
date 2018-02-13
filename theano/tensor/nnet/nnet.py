@@ -14,13 +14,14 @@ revisited later when all the intermediate part are on the GPU.
 """
 from __future__ import absolute_import, print_function, division
 import logging
-import numpy
+import warnings
+import numpy as np
 from six.moves import xrange
 
 import theano
 from theano import gof
 from theano import scalar
-from theano.tensor import extra_ops
+from theano.tensor import extra_ops, as_tensor_variable
 from theano.gof.opt import copy_stack_trace
 from theano.tensor import basic as tensor, subtensor, opt, elemwise
 from theano.tensor.type import (values_eq_approx_remove_inf,
@@ -64,7 +65,7 @@ class SoftmaxWithBias(gof.Op):
                 or x.type.dtype not in tensor.float_dtypes:
             raise ValueError('x must be 2-d tensor of floats')
         if b.type.ndim != 1 \
-                or x.type.dtype not in tensor.float_dtypes:
+                or b.type.dtype not in tensor.float_dtypes:
             raise ValueError('b must be 1-d tensor of floats')
 
         sm = x.type()
@@ -84,7 +85,7 @@ class SoftmaxWithBias(gof.Op):
 
         if x.size == 0:
             # Numpy doesn't like the max of a zero-sized object.
-            output_storage[0][0] = numpy.zeros(x.shape, dtype=x.dtype)
+            output_storage[0][0] = np.zeros(x.shape, dtype=x.dtype)
             return
 
         x_dtype = x.dtype
@@ -93,21 +94,20 @@ class SoftmaxWithBias(gof.Op):
             x = x.astype('float32')
 
         x_plus_b = x + b[None, :]
-        e_x = numpy.exp(x_plus_b - x_plus_b.max(axis=1)[:, None])
+        e_x = np.exp(x_plus_b - x_plus_b.max(axis=1)[:, None])
         e_x *= 1.0 / e_x.sum(axis=1)[:, None]
         # default for copy is True and we don't need a copy if the
         # data type matches.
         output_storage[0][0] = e_x.astype(x_dtype, copy=False)
 
-    def grad(self, inp, grads):
+    def L_op(self, inp, outputs, grads):
         x, b = inp
         g_sm, = grads
 
         if isinstance(g_sm.type, DisconnectedType):
             return [DisconnectedType()(), DisconnectedType()()]
 
-        sm = softmax_with_bias(x, b)
-        dx = softmax_grad(g_sm, sm)
+        dx = softmax_grad(g_sm, outputs[0])
         db = tensor.sum(dx, axis=0)
         return dx, db
 
@@ -314,7 +314,7 @@ class SoftmaxGrad(gof.Op):
 
     def perform(self, node, input_storage, output_storage):
         dy, sm = input_storage
-        dx = numpy.zeros_like(sm)
+        dx = np.zeros_like(sm)
         # dx[i,j] = - (\sum_k dy[i,k] sm[i,k]) sm[i,j] + dy[i,j] sm[i,j]
         for i in xrange(sm.shape[0]):
             dy_times_sm_i = dy[i] * sm[i]
@@ -429,28 +429,31 @@ class Softmax(gof.Op):
             raise ValueError('x must be 1-d or 2-d tensor of floats. Got %s' %
                              x.type)
         if x.ndim == 1:
+            warnings.warn("DEPRECATION: If x is a vector, Softmax will not automatically pad x "
+                          "anymore in next releases. If you need it, please do it manually. The "
+                          "vector case is gonna be supported soon and the output will be a vector.",
+                          stacklevel=4)
             x = tensor.shape_padleft(x, n_ones=1)
 
         return Apply(self, [x], [x.type()])
 
     def perform(self, node, input_storage, output_storage):
         x, = input_storage
-        e_x = numpy.exp(x - x.max(axis=1)[:, None])
+        e_x = np.exp(x - x.max(axis=1)[:, None])
         sm = e_x / e_x.sum(axis=1)[:, None]
         output_storage[0][0] = sm
 
-    def grad(self, inp, grads):
+    def L_op(self, inp, outputs, grads):
         x, = inp
         g_sm, = grads
-        sm = softmax_op(x)
-        return [softmax_grad(g_sm, sm)]
+        return [softmax_grad(g_sm, outputs[0])]
 
     def R_op(self, inputs, eval_points):
         # I think the Jacobian is symmetric so the R_op
         # is the same as the grad
         if None in eval_points:
             return [None]
-        return self.grad(inputs, eval_points)
+        return self.L_op(inputs, [self(*inputs)], eval_points)
 
     def infer_shape(self, node, shape):
         return shape
@@ -614,6 +617,10 @@ class LogSoftmax(gof.Op):
             raise ValueError('x must be 1-d or 2-d tensor of floats. Got %s' %
                              x.type)
         if x.ndim == 1:
+            warnings.warn("DEPRECATION: If x is a vector, LogSoftmax will not automatically pad x "
+                          "anymore in next releases. If you need it, please do it manually. The "
+                          "vector case is gonna be supported soon and the output will be a vector.",
+                          stacklevel=4)
             x = tensor.shape_padleft(x, n_ones=1)
 
         return Apply(self, [x], [x.type()])
@@ -621,8 +628,8 @@ class LogSoftmax(gof.Op):
     def perform(self, node, input_storage, output_storage):
         x, = input_storage
         xdev = x - x.max(axis=1)[:, None]
-        lsm = xdev - numpy.log(numpy.sum(numpy.exp(xdev), axis=1,
-                               keepdims=True))
+        lsm = xdev - np.log(np.sum(np.exp(xdev), axis=1,
+                            keepdims=True))
         output_storage[0][0] = lsm
 
     def grad(self, inp, grads):
@@ -773,7 +780,7 @@ def local_logsoftmax_grad(node):
     if (isinstance(node.op, SoftmaxGrad) and
         len(node.inputs) == 2 and
         node.inputs[0].owner is not None and
-        isinstance(node.inputs[0].owner.op, tensor.Elemwise) and
+        node.inputs[0].owner.op == tensor.true_div and
         len(node.inputs[0].owner.inputs) >= 2 and
         node.inputs[0].owner.inputs[1].owner is not None and
         node.inputs[0].owner.inputs[1].owner.op == softmax_op and
@@ -802,6 +809,9 @@ def softmax_graph(c):
 
 
 def softmax(c):
+    c = as_tensor_variable(c)
+    if c.broadcastable[-1]:
+        warnings.warn("The softmax is applied on a dimension of shape 1, which does not have a semantic meaning.")
     return softmax_op(c)
 
 
@@ -1001,27 +1011,27 @@ class CrossentropySoftmaxArgmax1HotWithBias(gof.Op):
             raise ValueError('y_idx must have same number of rows as x')
         if any(y_idx < 0):
             raise ValueError("y_i value out of bounds")
-        sm = numpy.zeros_like(x)  # softmax
-        nll = numpy.zeros(x.shape[0], dtype=node.outputs[0].type.dtype)  # nll(y | softmax(x))
-        am = numpy.zeros_like(y_idx)
+        sm = np.zeros_like(x)  # softmax
+        nll = np.zeros(x.shape[0], dtype=node.outputs[0].type.dtype)  # nll(y | softmax(x))
+        am = np.zeros_like(y_idx)
         for i in xrange(sm.shape[0]):
             # add the bias vector to the i'th row of x
             row = x[i] + b
 
             # get the maximum value of i'th row for numerically safe
             # softmax / nll
-            am[i] = numpy.argmax(row)
+            am[i] = np.argmax(row)
             m = row[am[i]]
 
             # compute the unnormalized softmax, and normalization constant
-            sm[i] = numpy.exp(row - m)
-            sum_j = numpy.sum(sm[i])  # sum_j(exp(x[j] - m))
+            sm[i] = np.exp(row - m)
+            sum_j = np.sum(sm[i])  # sum_j(exp(x[j] - m))
 
             # normalized our softmax
             sm[i] *= 1.0 / sum_j
 
             # store the nll
-            nll[i] = -row[y_idx[i]] + m + numpy.log(sum_j)
+            nll[i] = -row[y_idx[i]] + m + np.log(sum_j)
 
         output_storage[0][0] = nll
         output_storage[1][0] = sm
@@ -1056,7 +1066,7 @@ class CrossentropySoftmaxArgmax1HotWithBias(gof.Op):
             db_terms.append(db)
 
         if not isinstance(g_sm.type, DisconnectedType):
-            dx, db = softmax_with_bias.grad((x, b), (g_sm, ))
+            dx, db = softmax_with_bias.L_op((x, b), [softmax_with_bias(x, b)], (g_sm, ))
             dx_terms.append(dx)
             db_terms.append(db)
 
@@ -1198,7 +1208,7 @@ class CrossentropySoftmax1HotWithBiasDx(gof.Op):
         dy, sm, y_idx = input_storage
         if any(y_idx < 0):
             raise ValueError("y_i value out of bounds")
-        dx = numpy.zeros_like(sm)
+        dx = np.zeros_like(sm)
         if dy.ndim == 0:
             dy = dy[None]
         incr = int(dy.shape[0] > 1)
@@ -1389,7 +1399,7 @@ class CrossentropyCategorical1HotGrad(gof.Op):
     def perform(self, node, inp, out):
         g_y, coding_dist, true_one_of_n = inp
         g_coding_strg, = out
-        g_coding = numpy.zeros_like(coding_dist)
+        g_coding = np.zeros_like(coding_dist)
         for i in xrange(len(g_y)):
             g_coding[i, true_one_of_n[i]] = (-g_y[i] /
                                              coding_dist[i, true_one_of_n[i]])
@@ -1448,9 +1458,9 @@ class CrossentropyCategorical1Hot(gof.Op):
     def perform(self, node, inp, out):
         coding, one_of_n = inp
         y_out, = out
-        y = numpy.zeros_like(coding[:, 0])
+        y = np.zeros_like(coding[:, 0])
         for i in xrange(len(y)):
-            y[i] = -numpy.log(coding[i, one_of_n[i]])
+            y[i] = -np.log(coding[i, one_of_n[i]])
         y_out[0] = y
 
     def infer_shape(self, node, in_shapes):
@@ -1568,9 +1578,9 @@ def local_softmax_grad_to_crossentropy_with_softmax_grad(node):
 
 
 @opt.register_specialize('fast_compile_gpu')
-@gof.local_optimizer([tensor._max_and_argmax])
+@gof.local_optimizer([tensor.MaxAndArgmax])
 def local_argmax_pushdown(node):
-    if node.op == tensor._max_and_argmax and node.inputs[0].owner and \
+    if isinstance(node.op, tensor.MaxAndArgmax) and node.inputs[0].owner and \
             len(node.outputs[0].clients) > 0 and node.inputs[0].owner.op in \
             (softmax_op, softplus, tensor.exp, tensor.log, tensor.tanh, sigmoid,
              softmax_with_bias):
@@ -1584,23 +1594,24 @@ def local_argmax_pushdown(node):
                 "warning set the Theano flags 'warn.argmax_pushdown_bug' "
                 "to False")
 
-    if (node.op == tensor._max_and_argmax and
+    if (isinstance(node.op, tensor.MaxAndArgmax) and
             node.inputs[0].owner and len(node.outputs[0].clients) == 0):
         x_max, x_argmax = node.outputs
-        x, axis = node.inputs
+        x = node.inputs[0]
+        axis = node.op.get_params(node)
         # TODO: Make a list/set of monotonic ops...
         if x.owner and x.owner.op in (softmax_op, softplus, tensor.exp,
                                       tensor.log, tensor.tanh, sigmoid):
             pre_x, = x.owner.inputs
-            ret = tensor._max_and_argmax(pre_x, axis)
+            ret = tensor.max_and_argmax(pre_x, axis)
             copy_stack_trace(x_max, ret)
             return ret
         if x.owner and x.owner.op == softmax_with_bias:
             pre_x, pre_bias = x.owner.inputs
-            ret = tensor._max_and_argmax(pre_x +
-                                         tensor.DimShuffle(
-                                             pre_bias.broadcastable,
-                                             ('x', 0))(pre_bias), axis)
+            ret = tensor.max_and_argmax(pre_x +
+                                        tensor.DimShuffle(
+                                            pre_bias.broadcastable,
+                                            ('x', 0))(pre_bias), axis)
             # copy both stack traces
             copy_stack_trace(x_max, ret)
             return ret
@@ -1656,9 +1667,9 @@ def _is_const(z, val, approx=False):
     except tensor.NotScalarConstantError:
         return False
     if approx:
-        return numpy.allclose(maybe, val)
+        return np.allclose(maybe, val)
     else:
-        return numpy.all(maybe == val)
+        return np.all(maybe == val)
 
 
 @opt.register_specialize('fast_compile_gpu')
@@ -1728,21 +1739,6 @@ def local_advanced_indexing_crossentropy_onehot_grad(node):
     else:
         return
 
-    # If the arg to softmax is a broadcasted vector, d_sm has the form:
-    #   DimShuffle{x,0}(Sum{0}(...))
-    # we consider what's inside of the sum instead
-    vector_softmax = False
-    if d_sm.owner and isinstance(d_sm.owner.op, tensor.DimShuffle):
-        ds_op = d_sm.owner.op
-        if ds_op.input_broadcastable == (False,) and ds_op.new_order == ('x', 0):
-            maybe_sum = d_sm.owner.inputs[0]
-            if maybe_sum.owner and isinstance(maybe_sum.owner.op, tensor.Sum):
-                if sm.broadcastable == (True, False)\
-                        and maybe_sum.owner.op.axis == (0,)\
-                        and len(maybe_sum.owner.inputs) == 1:
-                    vector_softmax = True
-                    d_sm = maybe_sum.owner.inputs[0]
-
     # Two cases are supported:
     # 1. AdvancedIncSubtensor(
     #           zeros_like(softmax(x)),
@@ -1804,7 +1800,7 @@ def local_advanced_indexing_crossentropy_onehot_grad(node):
 
             # set out_grad according to the numerator, it may be divided later
             # num should be a vector or a scalar
-            if num.ndim == 1 or numpy.all(num.broadcastable):
+            if num.ndim == 1 or np.all(num.broadcastable):
                 out_grad *= -num
             else:
                 return
@@ -1830,7 +1826,7 @@ def local_advanced_indexing_crossentropy_onehot_grad(node):
                             rest = tensor.mul(*[other_inputs])
 
                         # Check that rest is a vector or a scalar
-                        if rest.ndim == 1 or numpy.all(rest.broadcastable):
+                        if rest.ndim == 1 or np.all(rest.broadcastable):
                             adv_subtensor = input
                             out_grad /= rest
                             break
@@ -1885,8 +1881,7 @@ def local_advanced_indexing_crossentropy_onehot_grad(node):
             # Check z is zeros_like(log(sm))
             if not _is_const(z, 0):
                 return
-            if z.broadcastable != (False, False):
-                if not (vector_softmax and z.broadcastable == (True, False)):
+            if z.broadcastable not in [(False, False), (True, False)]:
                     return
             # here we know that we are incrementing a matrix of zeros
             # (or a broadcasted vector).
@@ -2030,6 +2025,31 @@ def binary_crossentropy(output, target):
     return -(target * tensor.log(output) + (1.0 - target) * tensor.log(1.0 - output))
 
 
+def sigmoid_binary_crossentropy(output, target):
+    """
+    Compute the cross-entropy of binary random variables.
+
+    `output` should be real-valued (range (-inf, +inf)); `sigmoid` will be
+    applied to produce a (0, 1) valued input.
+
+    `target` is assumed to be probabilities in [0, 1].
+
+    Notes
+    -----
+    Mathematically equivalent to `binary_crossentropy(sigmoid(output), target)`,
+    but with more efficient and numerically stable computation.
+    """
+    def grad(inputs, out_grads):
+        (output, target), (out_grad,) = inputs, out_grads
+        g_output = out_grad * (sigmoid(output) - target)
+        g_target = out_grad * (-output)
+        return [g_output, g_target]
+    inp = [output, target]
+    outp = softplus(-abs(output)) + output * ((output > 0) - target)
+    return theano.OpFromGraph(inp, [outp], grad_overrides=grad, inline=True,
+                              name='sigmoid_binary_crossentropy')(*inp)
+
+
 def categorical_crossentropy(coding_dist, true_dist):
     """
     Return the cross-entropy between an approximating distribution and a true
@@ -2112,14 +2132,14 @@ class Prepend_scalar_constant_to_each_row(gof.Op):
         output, = out
         new_shape = (mat.shape[0], mat.shape[1] + 1)
         if output[0] is None:
-            output[0] = numpy.empty(new_shape, dtype=mat.dtype)
+            output[0] = np.empty(new_shape, dtype=mat.dtype)
             out = output[0]
         else:
             if output[0].shape != new_shape:
                 try:
                     output[0].resize(new_shape)
                 except Exception:
-                    output[0] = numpy.empty(new_shape, dtype=mat.dtype)
+                    output[0] = np.empty(new_shape, dtype=mat.dtype)
             out = output[0]
 
         out[:, 0].fill(self.val.data)
@@ -2160,14 +2180,14 @@ class Prepend_scalar_to_each_row(gof.Op):
         output, = out
         new_shape = (mat.shape[0], mat.shape[1] + 1)
         if output[0] is None:
-            output[0] = numpy.empty(new_shape, dtype=mat.dtype)
+            output[0] = np.empty(new_shape, dtype=mat.dtype)
             out = output[0]
         else:
             if output[0].shape != new_shape:
                 try:
                     output[0].resize(new_shape)
                 except Exception:
-                    output[0] = numpy.empty(new_shape, dtype=mat.dtype)
+                    output[0] = np.empty(new_shape, dtype=mat.dtype)
             out = output[0]
         out[:, 0].fill(val)
         out[:, 1:] = mat
@@ -2196,7 +2216,7 @@ def relu(x, alpha=0):
     ----------
     x : symbolic tensor
         Tensor to compute the activation function for.
-    alpha : scalar or tensor, optional
+    alpha : `scalar or tensor, optional`
         Slope for negative input, usually between 0 and 1. The default value
         of 0 will lead to the standard rectifier, 1 will lead to
         a linear activation function, and any value in between will give a
@@ -2253,16 +2273,25 @@ def h_softmax(x, batch_size, n_outputs, n_classes, n_outputs_per_class,
               W1, b1, W2, b2, target=None):
     """ Two-level hierarchical softmax.
 
-    The architecture is composed of two softmax layers: the first predicts the
-    class of the input x while the second predicts the output of the input x in
-    the predicted class.
-    More explanations can be found in the original paper [1]_.
+    This function implements a two-layer hierarchical softmax. It is commonly
+    used as an alternative of the softmax when the number of outputs is
+    important (it is common to use it for millions of outputs). See
+    reference [1]_ for more information about the computational gains.
 
-    If target is specified, it will only compute the outputs of the
-    corresponding targets. Otherwise, if target is None, it will compute all
-    the outputs.
+    The `n_outputs` outputs are organized in `n_classes` classes, each class
+    containing the same number `n_outputs_per_class` of outputs.
+    For an input `x` (last hidden activation), the first softmax layer predicts
+    its class and the second softmax layer predicts its output among its class.
 
-    The outputs are grouped in the same order as they are initially defined.
+    If `target` is specified, it will only compute the outputs of the
+    corresponding targets. Otherwise, if `target` is `None`, it will compute
+    all the outputs.
+
+    The outputs are grouped in classes in the same order as they are initially
+    defined: if `n_outputs=10` and `n_classes=2`, then the first class is
+    composed of the outputs labeled `{0,1,2,3,4}` while the second class is
+    composed of `{5,6,7,8,9}`. If you need to change the classes, you have to
+    re-label your outputs.
 
     .. versionadded:: 0.7.1
 
@@ -2285,7 +2314,8 @@ def h_softmax(x, batch_size, n_outputs, n_classes, n_outputs_per_class,
         probabilities of the classes.
     b1: tensor of shape (n_classes,)
         the bias vector of the first softmax layer.
-    W2: tensor of shape (n_classes, number of features of the input x, n_outputs_per_class)
+    W2: tensor of shape (n_classes, number of features of the input x,
+            n_outputs_per_class)
         the weight matrix of the second softmax, which maps the input x to
         the probabilities of the outputs.
     b2: tensor of shape (n_classes, n_outputs_per_class)
@@ -2299,22 +2329,74 @@ def h_softmax(x, batch_size, n_outputs, n_classes, n_outputs_per_class,
 
     Returns
     -------
-    output_probs: tensor of shape (batch_size, n_outputs) or (batch_size, 1)
-        Output of the two-layer hierarchical softmax for input x. If target is
-        not specified (None), then all the outputs are computed and the
-        returned tensor has shape (batch_size, n_outputs). Otherwise, when
-        target is specified, only the corresponding outputs are computed and
-        the returned tensor has thus shape (batch_size, 1).
+    tensor of shape (`batch_size`, `n_outputs`) or (`batch_size`, 1)
+        Output tensor of the two-layer hierarchical softmax for input `x`.
+        Depending on argument `target`, it can have two different shapes.
+        If `target` is not specified (`None`), then all the outputs are
+        computed and the returned tensor has shape (`batch_size`, `n_outputs`).
+        Otherwise, when `target` is specified, only the corresponding outputs
+        are computed and the returned tensor has thus shape (`batch_size`, 1).
 
     Notes
     -----
-    The product of n_outputs_per_class and n_classes has to be greater or equal
-    to n_outputs. If it is strictly greater, then the irrelevant outputs will
-    be ignored.
-    n_outputs_per_class and n_classes have to be the same as the corresponding
-    dimensions of the tensors of W1, b1, W2 and b2.
-    The most computational efficient configuration is when n_outputs_per_class
-    and n_classes are equal to the square root of n_outputs.
+    The product of `n_outputs_per_class` and `n_classes` has to be greater or
+    equal to `n_outputs`. If it is strictly greater, then the irrelevant
+    outputs will be ignored.
+    `n_outputs_per_class` and `n_classes` have to be the same as the
+    corresponding dimensions of the tensors of `W1`, `b1`, `W2` and `b2`.
+    The most computational efficient configuration is when
+    `n_outputs_per_class` and `n_classes` are equal to the square root of
+    `n_outputs`.
+
+    Examples
+    --------
+    The following example builds a simple hierarchical softmax layer.
+
+    >>> import numpy as np
+    >>> import theano
+    >>> from theano import tensor
+    >>> from theano.tensor.nnet import h_softmax
+    >>>
+    >>> # Parameters
+    >>> batch_size = 32
+    >>> n_outputs = 100
+    >>> dim_x = 10  # dimension of the input
+    >>> n_classes = int(np.ceil(np.sqrt(n_outputs)))
+    >>> n_outputs_per_class = n_classes
+    >>> output_size = n_outputs_per_class * n_outputs_per_class
+    >>>
+    >>> # First level of h_softmax
+    >>> floatX = theano.config.floatX
+    >>> W1 = theano.shared(
+    ...     np.random.normal(0, 0.001, (dim_x, n_classes)).astype(floatX))
+    >>> b1 = theano.shared(np.zeros((n_classes,), floatX))
+    >>>
+    >>> # Second level of h_softmax
+    >>> W2 = np.random.normal(0, 0.001,
+    ...     size=(n_classes, dim_x, n_outputs_per_class)).astype(floatX)
+    >>> W2 = theano.shared(W2)
+    >>> b2 = theano.shared(np.zeros((n_classes, n_outputs_per_class), floatX))
+    >>>
+    >>> # We can now build the graph to compute a loss function, typically the
+    >>> # negative log-likelihood:
+    >>>
+    >>> x = tensor.imatrix('x')
+    >>> target = tensor.imatrix('target')
+    >>>
+    >>> # This only computes the output corresponding to the target.
+    >>> # The complexity is O(n_classes + n_outputs_per_class).
+    >>> y_hat_tg = h_softmax(x, batch_size, output_size, n_classes,
+    ...                      n_outputs_per_class, W1, b1, W2, b2, target)
+    >>>
+    >>> negll = -tensor.mean(tensor.log(y_hat_tg))
+    >>>
+    >>> # We may need to compute all the outputs (at test time usually):
+    >>>
+    >>> # This computes all the outputs.
+    >>> # The complexity is O(n_classes * n_outputs_per_class).
+    >>> output = h_softmax(x, batch_size, output_size, n_classes,
+    ...                    n_outputs_per_class, W1, b1, W2, b2)
+
 
     References
     ----------
@@ -2367,7 +2449,7 @@ def h_softmax(x, batch_size, n_outputs, n_classes, n_outputs_per_class,
 
 def elu(x, alpha=1):
     """
-    Compute the element-wise exponential linear activation function.
+    Compute the element-wise exponential linear activation function [2]_.
 
     .. versionadded:: 0.8.0
 
@@ -2385,11 +2467,36 @@ def elu(x, alpha=1):
 
     References
     -----
-    .. [1] Djork-Arne Clevert,  Thomas Unterthiner, Sepp Hochreiter
+    .. [2] Djork-Arne Clevert,  Thomas Unterthiner, Sepp Hochreiter
         "Fast and Accurate Deep Network Learning by
         Exponential Linear Units (ELUs)" <http://arxiv.org/abs/1511.07289>`.
     """
-    return tensor.switch(x > 0, x, alpha * (tensor.exp(x) - 1))
+    return tensor.switch(x > 0, x, alpha * tensor.expm1(x))
+
+
+def selu(x):
+    """Compute the element-wise Scaled Exponential Linear unit [3]_.
+
+    .. versionadded:: 0.9.0
+
+    Parameters
+    ----------
+    x : symbolic tensor
+        Tensor to compute the activation function for.
+
+    Returns
+    -------
+    symbolic tensor
+        Element-wise scaled exponential linear activation function applied to `x`.
+
+    References
+    ----------
+    .. [3] Klambauer G, Unterthiner T, Mayr A, Hochreiter S.
+        "Self-Normalizing Neural Networks" <https://arxiv.org/abs/1706.02515>
+    """
+    alpha = 1.6732632423543772848170429916717
+    scale = 1.0507009873554804934193349852946
+    return scale * elu(x, alpha)
 
 
 class ScalarSoftsign(theano.scalar.UnaryScalarOp):

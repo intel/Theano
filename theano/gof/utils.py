@@ -1,10 +1,9 @@
 from __future__ import absolute_import, print_function, division
-from collections import OrderedDict
 import linecache
 import sys
 import traceback
 
-import numpy
+import numpy as np
 from six import iteritems, integer_types, string_types, with_metaclass
 from six.moves import StringIO
 
@@ -85,7 +84,7 @@ def add_tag_trace(thing, user_line=None):
 
     Notes
     -----
-    We alse use config.traceback.limit for the maximum number of stack level
+    We also use config.traceback.limit for the maximum number of stack level
     we look.
 
     """
@@ -129,8 +128,10 @@ def get_variable_trace_string(v):
             traceback.print_list(v.tag.trace, sio)
         else:
             # Print separate message for each element in the list of
-            # batcktraces
-            for subtr in tr:
+            # backtraces
+            for idx, subtr in enumerate(tr):
+                if len(tr) > 1:
+                    print("trace %d" % idx, file=sio)
                 traceback.print_list(subtr, sio)
     return sio.getvalue()
 
@@ -162,7 +163,7 @@ class MetaObject(type):
         if props is not None:
             if not isinstance(props, tuple):
                 raise TypeError("__props__ has to be a tuple")
-            if not all(isinstance(p, str) for p in props):
+            if not all(isinstance(p, string_types) for p in props):
                 raise TypeError("elements of __props__ have to be strings")
 
             def _props(self):
@@ -504,6 +505,8 @@ def hist(coll):
     return counts
 
 
+@deprecated("theano.gof.utils",
+            msg="Use a_theano_variable.auto_name instead")
 def give_variables_names(variables):
     """
     Gives unique names to an iterable of variables. Modifies input.
@@ -545,61 +548,47 @@ if PY3:
     import hashlib
 
     def hash_from_code(msg):
-        # hashlib.md5() requires an object that supports buffer interface,
+        # hashlib.sha256() requires an object that supports buffer interface,
         # but Python 3 (unicode) strings don't.
         if isinstance(msg, str):
             msg = msg.encode()
         # Python 3 does not like module names that start with
         # a digit.
-        return 'm' + hashlib.md5(msg).hexdigest()
+        return 'm' + hashlib.sha256(msg).hexdigest()
 
 else:
     import hashlib
 
     def hash_from_code(msg):
         try:
-            return hashlib.md5(msg).hexdigest()
+            return hashlib.sha256(msg).hexdigest()
         except TypeError:
-            assert isinstance(msg, numpy.ndarray)
-            return hashlib.md5(numpy.getbuffer(msg)).hexdigest()
+            assert isinstance(msg, np.ndarray)
+            return hashlib.sha256(np.getbuffer(msg)).hexdigest()
 
 
 def hash_from_file(file_path):
     """
-    Return the MD5 hash of a file.
+    Return the SHA256 hash of a file.
 
     """
-    return hash_from_code(open(file_path, 'rb').read())
+    with open(file_path, 'rb') as f:
+        file_content = f.read()
+    return hash_from_code(file_content)
 
 
-def hash_from_dict(d):
-    """
-    Work around the fact that dict are not hashable in python.
-
-    This request that all object have a sorted order that depend only
-    on the key of the object. We support only integer/float/string keys.
-
-    Also, we transform values that are list into tuple as list are not
-    hashable.
-
-    Notes
-    -----
-    Special case for OrderedDict, it use the order of the dict,
-    so the key don't need to be sortable.
-
-    """
-    if isinstance(d, OrderedDict):
-        items = list(iteritems(d))
-    else:
-        items = list(d.items())
-        items.sort()
-    first_part = [k for k, v in items]
-    second_part = []
-    for k, v in items:
-        assert isinstance(k, (string_types, integer_types, float))
-        if isinstance(v, (tuple, list)):
-            second_part += [tuple(v)]
-        else:
-            second_part += [v]
-    tuple_items = tuple(first_part + second_part + [d.__class__])
-    return hash(tuple_items)
+# Set of C and C++ keywords as defined (at March 2nd, 2017) in the pages below:
+# - http://fr.cppreference.com/w/c/keyword
+# - http://fr.cppreference.com/w/cpp/keyword
+# Added `NULL` and `_Pragma` keywords.
+c_cpp_keywords = {'_Alignas', '_Alignof', '_Atomic', '_Bool', '_Complex', '_Generic', '_Imaginary', '_Noreturn',
+                  '_Pragma', '_Static_assert', '_Thread_local', 'alignas', 'alignof', 'and', 'and_eq', 'asm', 'auto',
+                  'bitand', 'bitor', 'bool', 'break', 'case', 'catch', 'char', 'char16_t', 'char32_t', 'class', 'compl',
+                  'const', 'const_cast', 'constexpr', 'continue', 'decltype', 'default', 'delete', 'do', 'double',
+                  'dynamic_cast', 'else', 'enum', 'explicit', 'export', 'extern', 'false', 'float', 'for', 'friend',
+                  'goto', 'if', 'inline', 'int', 'long', 'mutable', 'namespace', 'new', 'noexcept', 'not', 'not_eq',
+                  'NULL', 'nullptr', 'operator', 'or', 'or_eq', 'private', 'protected', 'public', 'register',
+                  'reinterpret_cast', 'restrict', 'return', 'short', 'signed', 'sizeof', 'static', 'static_assert',
+                  'static_cast', 'struct', 'switch', 'template', 'this', 'thread_local', 'throw', 'true', 'try',
+                  'typedef', 'typeid', 'typename', 'union', 'unsigned', 'using', 'virtual', 'void', 'volatile',
+                  'wchar_t', 'while', 'xor', 'xor_eq'}

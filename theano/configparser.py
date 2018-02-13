@@ -10,7 +10,7 @@ import sys
 import warnings
 from functools import wraps
 
-from six import StringIO, PY3
+from six import StringIO, PY3, iteritems
 
 import theano
 from theano.compat import configparser as ConfigParser
@@ -91,37 +91,46 @@ theano_raw_cfg = ConfigParser.RawConfigParser()
 theano_raw_cfg.read(config_files)
 
 
-def change_flags(**kwargs):
+class change_flags(object):
     """
-    Use this as a decorator to change the value of Theano config variable.
+    Use this as a decorator or context manager to change the value of
+    Theano config variables.
 
     Useful during tests.
     """
-    def change_flags_exec(f):
-        @wraps(f)
-        def inner(*args, **kwargs_):
-            old_val = {}
-            for k in kwargs:
-                l = [v for v in theano.configparser._config_var_list
-                     if v.fullname == k]
-                assert len(l) == 1
-                old_val[k] = l[0].__get__(True, None)
-            try:
-                for k in kwargs:
-                    l = [v for v in theano.configparser._config_var_list
-                         if v.fullname == k]
-                    assert len(l) == 1
-                    l[0].__set__(None, kwargs[k])
-                return f(*args, **kwargs_)
-            finally:
-                for k in kwargs:
-                    l = [v for v in theano.configparser._config_var_list
-                         if v.fullname == k]
-                    assert len(l) == 1
-                    l[0].__set__(None, old_val[k])
+    def __init__(self, args=(), **kwargs):
+        confs = dict()
+        args = dict(args)
+        args.update(kwargs)
+        for k in args:
+            l = [v for v in _config_var_list
+                 if v.fullname == k]
+            assert len(l) == 1, l
+            confs[k] = l[0]
+        self.confs = confs
+        self.new_vals = args
 
-        return inner
-    return change_flags_exec
+    def __call__(self, f):
+        @wraps(f)
+        def res(*args, **kwargs):
+            with self:
+                return f(*args, **kwargs)
+        return res
+
+    def __enter__(self):
+        self.old_vals = {}
+        for k, v in iteritems(self.confs):
+            self.old_vals[k] = v.__get__(True, None)
+        try:
+            for k, v in iteritems(self.confs):
+                v.__set__(None, self.new_vals[k])
+        except:
+            self.__exit__()
+            raise
+
+    def __exit__(self, *args):
+        for k, v in iteritems(self.confs):
+            v.__set__(None, self.old_vals[k])
 
 
 def fetch_val_for_key(key, delete_key=False):
@@ -174,11 +183,13 @@ def _config_print(thing, buf, print_doc=True):
         print("", file=buf)
 
 
-def get_config_md5():
+def get_config_hash():
     """
-    Return a string md5 of the current config options. It should be such that
-    we can safely assume that two different config setups will lead to two
-    different strings.
+    Return a string sha256 of the current config options. In the past,
+    it was md5.
+
+    The string should be such that we can safely assume that two different
+    config setups will lead to two different strings.
 
     We only take into account config options for which `in_c_key` is True.
     """

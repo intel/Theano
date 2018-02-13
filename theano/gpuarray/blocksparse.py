@@ -1,16 +1,16 @@
 from __future__ import absolute_import, print_function, division
 import logging
-import os
 
-import numpy
+import numpy as np
 from theano import Apply, tensor
-from theano.gof import COp
+from theano.gof import COp, ParamsType
 from theano.tensor import discrete_dtypes, as_tensor_variable
+from theano.scalar import bool as bool_t
 
 from theano.gradient import grad_undefined
 
 from .type import gpu_context_type
-from .basic_ops import as_gpuarray_variable, infer_context_name
+from .basic_ops import as_gpuarray_variable, infer_context_name, gpuarray_helper_inc_dir
 
 _logger = logging.getLogger('theano.gpuarray.blocksparse')
 
@@ -25,25 +25,20 @@ class GpuSparseBlockGemv(COp):
     function for a stable interface.
     """
     __props__ = ('inplace',)
-    params_type = gpu_context_type
+    params_type = ParamsType(inplace=bool_t, context=gpu_context_type)
+    # NB: DTYPE_INPUT_* is used in C code, so I think we should not set check_input to False.
 
     def __init__(self, inplace=False):
-        COp.__init__(self, "blockgemv.c", "APPLY_SPECIFIC(blockgemv)")
+        COp.__init__(self, "c_code/blockgemv.c", "APPLY_SPECIFIC(blockgemv)")
         self.inplace = inplace
         if self.inplace:
             self.destroy_map = {0: [0]}
 
     def get_params(self, node):
-        return node.inputs[0].type.context
-
-    def get_op_params(self):
-        if self.inplace:
-            return [('INPLACE', '1')]
-        else:
-            return []
+        return self.params_type.get_params(self, context=node.inputs[0].type.context)
 
     def c_header_dirs(self):
-        return [os.path.dirname(__file__)]
+        return [gpuarray_helper_inc_dir()]
 
     def c_headers(self):
         return ['<gpuarray/buffer_blas.h>', '<gpuarray/buffer.h>',
@@ -102,26 +97,20 @@ class GpuSparseBlockOuter(COp):
     of GpuSparseBlockGemv. The gradient is not implemented.
     """
     __props__ = ('inplace',)
-    params_type = gpu_context_type
+    params_type = ParamsType(inplace=bool_t, context=gpu_context_type)
 
     def __init__(self, inplace=False):
-        COp.__init__(self, ["blockger.c"], "APPLY_SPECIFIC(blockger)")
+        COp.__init__(self, ["c_code/blockger.c"], "APPLY_SPECIFIC(blockger)")
         self.inplace = inplace
         if self.inplace:
             self.destroy_map = {0: [0]}
 
     def get_params(self, node):
-        return node.inputs[0].type.context
-
-    def get_op_params(self):
-        if self.inplace:
-            return [('INPLACE', '1')]
-        else:
-            return []
+        return self.params_type.get_params(self, context=node.inputs[0].type.context)
 
     def make_node(self, o, x, y, xIdx, yIdx, alpha=None):
         ctx = infer_context_name(o, x, y)
-        one = tensor.constant(numpy.asarray(1.0, dtype='float32'))
+        one = tensor.constant(np.asarray(1.0, dtype='float32'))
         o = as_gpuarray_variable(o, ctx)
         x = as_gpuarray_variable(x, ctx)
         y = as_gpuarray_variable(y, ctx)
@@ -136,7 +125,7 @@ class GpuSparseBlockOuter(COp):
         return [input_shapes[0]]
 
     def c_header_dirs(self):
-        return [os.path.dirname(__file__)]
+        return [gpuarray_helper_inc_dir()]
 
     def c_headers(self):
         return ['<gpuarray/buffer_blas.h>', '<gpuarray/buffer.h>',

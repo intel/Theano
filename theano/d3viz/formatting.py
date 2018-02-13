@@ -11,7 +11,6 @@ from six import iteritems, itervalues
 
 import theano
 from theano import gof
-from theano.compile.profilemode import ProfileMode
 from theano.compile import Function
 from theano.compile import builders
 from theano.printing import pydot_imported, pydot_imported_msg
@@ -123,14 +122,7 @@ class PyDotFormatter(object):
 
         profile = None
         if isinstance(fct, Function):
-            mode = fct.maker.mode
-            if (not isinstance(mode, ProfileMode) or
-                    fct not in mode.profile_stats):
-                mode = None
-            if mode:
-                profile = mode.profile_stats[fct]
-            else:
-                profile = getattr(fct, "profile", None)
+            profile = getattr(fct, "profile", None)
             outputs = fct.maker.fgraph.outputs
             topo = fct.maker.fgraph.toposort()
         elif isinstance(fct, gof.FunctionGraph):
@@ -241,6 +233,7 @@ class PyDotFormatter(object):
                 gf = PyDotFormatter()
                 # Use different node prefix for sub-graphs
                 gf.__node_prefix = __node_id
+                node.op.prepare_node(node, None, None, 'py')
                 gf(node.op.fn, subgraph)
                 graph.add_subgraph(subgraph)
                 pd_node.get_attributes()['subg'] = subgraph.get_name()
@@ -251,20 +244,14 @@ class PyDotFormatter(object):
                 # Inputs mapping
                 ext_inputs = [self.__node_id(x) for x in node.inputs]
                 int_inputs = [gf.__node_id(x)
-                              for x in node.op.fn.maker.fgraph.inputs]
+                              for x in node.op.local_inputs]
                 assert len(ext_inputs) == len(int_inputs)
                 h = format_map(zip(ext_inputs, int_inputs))
                 pd_node.get_attributes()['subg_map_inputs'] = h
 
                 # Outputs mapping
-                ext_outputs = []
-                for n in topo:
-                    for i in n.inputs:
-                        h = i.owner if i.owner else i
-                        if h is node:
-                            ext_outputs.append(self.__node_id(n))
-                int_outputs = node.op.fn.maker.fgraph.outputs
-                int_outputs = [gf.__node_id(x) for x in int_outputs]
+                ext_outputs = [self.__node_id(x) for x in node.outputs]
+                int_outputs = [gf.__node_id(x) for x in node.op.local_outputs]
                 assert len(ext_outputs) == len(int_outputs)
                 h = format_map(zip(int_outputs, ext_outputs))
                 pd_node.get_attributes()['subg_map_outputs'] = h

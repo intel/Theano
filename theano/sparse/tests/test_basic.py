@@ -4,7 +4,7 @@ import time
 import unittest
 
 from nose.plugins.skip import SkipTest
-import numpy
+import numpy as np
 from six.moves import xrange
 try:
     import scipy.sparse as sp
@@ -83,13 +83,13 @@ def random_lil(shape, dtype, nnz):
     huge = 2 ** 30
     for k in range(nnz):
         # set non-zeros in random locations (row x, col y)
-        idx = numpy.random.randint(1, huge+1, size=2) % shape
-        value = numpy.random.rand()
+        idx = np.random.randint(1, huge+1, size=2) % shape
+        value = np.random.rand()
         # if dtype *int*, value will always be zeros!
-        if "int" in dtype:
+        if dtype in theano.sparse.integer_dtypes:
             value = int(value * 100)
         # The call to tuple is needed as scipy 0.13.1 do not support
-        # ndarray with lenght 2 as idx tuple.
+        # ndarray with length 2 as idx tuple.
         rval.__setitem__(
             tuple(idx),
             value)
@@ -98,11 +98,10 @@ def random_lil(shape, dtype, nnz):
 
 def sparse_random_inputs(format, shape, n=1, out_dtype=None, p=0.5, gap=None,
                          explicit_zero=False, unsorted_indices=False):
-    """Return a tuple containing everything needed to
-    perform a test.
+    """
+    Return a tuple containing everything needed to perform a test.
 
-    If `out_dtype` is `None`, theano.config.floatX is
-    used.
+    If `out_dtype` is `None`, theano.config.floatX is used.
 
     :param format: Sparse format.
     :param shape: Shape of data.
@@ -119,8 +118,7 @@ def sparse_random_inputs(format, shape, n=1, out_dtype=None, p=0.5, gap=None,
     :param unsorted_indices: when True, we make sure there is
                              unsorted indices in the returned
                              sparse matrix.
-    :return: (variable, data) where both `variable`
-             and `data` are list.
+    :return: (variable, data) where both `variable` and `data` are list.
 
     :note: explicit_zero and unsorted_indices was added in Theano 0.6rc4
     """
@@ -136,23 +134,23 @@ def sparse_random_inputs(format, shape, n=1, out_dtype=None, p=0.5, gap=None,
         assert gap[0] >= 0
 
     def _rand():
-        where = numpy.random.binomial(1, p, size=shape).astype('int8')
+        where = np.random.binomial(1, p, size=shape).astype('int8')
 
         if out_dtype in sparse.discrete_dtypes:
             if not gap:
-                value = numpy.random.randint(50, size=shape)
+                value = np.random.randint(50, size=shape)
             elif len(gap) == 2:
-                value = numpy.random.randint(gap[0], gap[1], size=shape)
+                value = np.random.randint(gap[0], gap[1], size=shape)
             else:
-                value = numpy.random.randint(gap[0], size=shape)
+                value = np.random.randint(gap[0], size=shape)
         else:
             if not gap:
-                value = numpy.random.random(shape)
+                value = np.random.random(shape)
             elif len(gap) == 2:
                 a, b = gap
-                value = a + numpy.random.random(shape) * (b - a)
+                value = a + np.random.random(shape) * (b - a)
             else:
-                value = numpy.random.random(shape) * gap[0]
+                value = np.random.random(shape) * gap[0]
         return (where * value).astype(out_dtype)
 
     variable = [getattr(theano.sparse, format + '_matrix')(dtype=out_dtype)
@@ -169,13 +167,13 @@ def sparse_random_inputs(format, shape, n=1, out_dtype=None, p=0.5, gap=None,
         for idx in range(n):
             assert data[idx].nnz > 1, (
                 "can't make a sparse matrix with explicit 0")
-            d_idx = numpy.random.randint(data[idx].nnz)
+            d_idx = np.random.randint(data[idx].nnz)
             data[idx].data[d_idx] = 0
 
     # numpy 1.5.0 with scipy 0.9.0 have scipy.sparse.XXX_matrix return
     # typenum 10(ulonglong) instead of 8(uint64) event if they are the same!
     # Theano don't like ulonglong type_num
-    dtype = numpy.dtype(out_dtype)  # Convert into dtype object.
+    dtype = np.dtype(out_dtype)  # Convert into dtype object.
     if data[0].dtype.num != dtype.num and dtype.str == data[0].dtype.str:
         data[0].data = theano._asarray(data[0].data, out_dtype)
     assert data[0].dtype.num == dtype.num
@@ -184,7 +182,7 @@ def sparse_random_inputs(format, shape, n=1, out_dtype=None, p=0.5, gap=None,
 
 def verify_grad_sparse(op, pt, structured=False, *args, **kwargs):
     """
-    Wrapper for theano.test.unittest_tools.py:verify_grad wich
+    Wrapper for theano.test.unittest_tools.py:verify_grad which
     converts sparse variables back and forth.
 
     Parameters
@@ -203,7 +201,6 @@ def verify_grad_sparse(op, pt, structured=False, *args, **kwargs):
     Returns
     -------
     None
-
     """
 
     def conv_none(x):
@@ -423,7 +420,7 @@ class SparseInferShapeTester(utt.InferShapeTester):
                 [x + y],
                 [sp.csr_matrix(random_lil((10, 40),
                                config.floatX, 3)),
-                 numpy.random.randn(10, 40).astype(config.floatX)],
+                 np.random.randn(10, 40).astype(config.floatX)],
                 (AddSD, sparse.opt.AddSD_ccode))
 
     def test_mul_ss(self):
@@ -444,7 +441,7 @@ class SparseInferShapeTester(utt.InferShapeTester):
                 [x * y],
                 [sp.csr_matrix(random_lil((10, 40),
                                config.floatX, 3)),
-                 numpy.random.randn(10, 40).astype(config.floatX)],
+                 np.random.randn(10, 40).astype(config.floatX)],
                 MulSD, excluding=["local_mul_s_d"])
 
     def test_remove0(self):
@@ -518,7 +515,7 @@ class SparseInferShapeTester(utt.InferShapeTester):
         x = tensor.matrix()
         self._compile_and_check([x],
                                 [csc_from_dense(x)],
-                                [numpy.random.randn(10, 40).astype(
+                                [np.random.randn(10, 40).astype(
                                     config.floatX)],
                                 csc_from_dense.__class__)
 
@@ -531,9 +528,9 @@ class SparseInferShapeTester(utt.InferShapeTester):
         self._compile_and_check(
                 [x, vals, ilist],
                 [out],
-                [numpy.zeros((40, 10), dtype=config.floatX),
-                 numpy.random.randn(12, 10).astype(config.floatX),
-                 numpy.random.randint(low=0, high=40, size=(12,))],
+                [np.zeros((40, 10), dtype=config.floatX),
+                 np.random.randn(12, 10).astype(config.floatX),
+                 np.random.randint(low=0, high=40, size=(12,))],
                 ConstructSparseFromList
                 )
 
@@ -565,8 +562,8 @@ class TestConstructSparseFromList(unittest.TestCase):
         assert isinstance(g.owner.op, ConstructSparseFromList)
 
         # Test the sparse grad
-        valm = numpy.random.rand(5, 4).astype(config.floatX)
-        valv = numpy.random.randint(0, 5, 10)
+        valm = np.random.rand(5, 4).astype(config.floatX)
+        valv = np.random.randint(0, 5, 10)
         m = theano.tensor.matrix()
         shared_v = theano.shared(valv)
 
@@ -603,21 +600,21 @@ class T_AddMul(unittest.TestCase):
 
     def testMulSS(self):
         self._testSS(mul,
-                     numpy.array([[1., 0], [3, 0], [0, 6]]),
-                     numpy.array([[1., 2], [3, 0], [0, 6]]))
+                     np.array([[1., 0], [3, 0], [0, 6]]),
+                     np.array([[1., 2], [3, 0], [0, 6]]))
 
     def testMulSD(self):
         self._testSD(mul,
-                     numpy.array([[1., 0], [3, 0], [0, 6]]),
-                     numpy.array([[1., 2], [3, 0], [0, 6]]))
+                     np.array([[1., 0], [3, 0], [0, 6]]),
+                     np.array([[1., 2], [3, 0], [0, 6]]))
 
     def testMulDS(self):
         self._testDS(mul,
-                     numpy.array([[1., 0], [3, 0], [0, 6]]),
-                     numpy.array([[1., 2], [3, 0], [0, 6]]))
+                     np.array([[1., 0], [3, 0], [0, 6]]),
+                     np.array([[1., 2], [3, 0], [0, 6]]))
 
-    def _testSS(self, op, array1=numpy.array([[1., 0], [3, 0], [0, 6]]),
-                array2=numpy.asarray([[0, 2.], [0, 4], [5, 0]])):
+    def _testSS(self, op, array1=np.array([[1., 0], [3, 0], [0, 6]]),
+                array2=np.asarray([[0, 2.], [0, 4], [5, 0]])):
         for mtype1, mtype2 in product(_mtypes, _mtypes):
             for dtype1, dtype2 in [('float64', 'int8'),
                                    ('int8', 'float64'),
@@ -643,19 +640,19 @@ class T_AddMul(unittest.TestCase):
                 val = eval_outputs([apb])
                 self.assertTrue(val.shape == (3, 2))
                 if op is add:
-                    self.assertTrue(numpy.all(val.todense() == (array1 + array2)))
+                    self.assertTrue(np.all(val.todense() == (array1 + array2)))
                     if dtype1.startswith('float') and dtype2.startswith('float'):
                         verify_grad_sparse(op, [a, b], structured=False)
                 elif op is mul:
-                    self.assertTrue(numpy.all(val.todense()
+                    self.assertTrue(np.all(val.todense()
                                               == (array1 * array2)))
                     if dtype1.startswith('float') and dtype2.startswith('float'):
                         verify_grad_sparse(op, [a, b], structured=False)
 
-    def _testSD(self, op, array1=numpy.array([[1., 0], [3, 0], [0, 6]]),
-                array2=numpy.asarray([[0, 2.], [0, 4], [5, 0]])):
+    def _testSD(self, op, array1=np.array([[1., 0], [3, 0], [0, 6]]),
+                array2=np.asarray([[0, 2.], [0, 4], [5, 0]])):
         for mtype in _mtypes:
-            for a in [numpy.array(array1), tensor.as_tensor_variable(array1),
+            for a in [np.array(array1), tensor.as_tensor_variable(array1),
                       theano.shared(array1)]:
                 for dtype1, dtype2 in [('float64', 'int8'),
                                        ('int8', 'float64'),
@@ -675,9 +672,9 @@ class T_AddMul(unittest.TestCase):
                     self.assertTrue(val.shape == (3, 2))
                     if op is add:
                         self.assertTrue(_is_dense_variable(apb))
-                        self.assertTrue(numpy.all(val == (array1 + b)))
-                        ans = numpy.array([[1., 2], [3, 4], [5, 6]])
-                        self.assertTrue(numpy.all(val == ans))
+                        self.assertTrue(np.all(val == (array1 + b)))
+                        ans = np.array([[1., 2], [3, 4], [5, 6]])
+                        self.assertTrue(np.all(val == ans))
                         if isinstance(a, theano.Constant):
                             a = a.data
                         if getattr(a, 'owner', None):
@@ -686,8 +683,8 @@ class T_AddMul(unittest.TestCase):
                             verify_grad_sparse(op, [a, b], structured=True)
                     elif op is mul:
                         self.assertTrue(_is_sparse_variable(apb))
-                        self.assertTrue(numpy.all(val.todense() == (b.multiply(array1))))
-                        self.assertTrue(numpy.all(val.todense() == numpy.array(
+                        self.assertTrue(np.all(val.todense() == (b.multiply(array1))))
+                        self.assertTrue(np.all(val.todense() == np.array(
                             [[1, 0], [9, 0], [0, 36]])))
                         if isinstance(a, theano.Constant):
                             a = a.data
@@ -696,10 +693,10 @@ class T_AddMul(unittest.TestCase):
                         if dtype1.startswith('float') and dtype2.startswith('float'):
                             verify_grad_sparse(op, [a, b], structured=False)
 
-    def _testDS(self, op, array1=numpy.array([[1., 0], [3, 0], [0, 6]]),
-                array2=numpy.asarray([[0, 2.], [0, 4], [5, 0]])):
+    def _testDS(self, op, array1=np.array([[1., 0], [3, 0], [0, 6]]),
+                array2=np.asarray([[0, 2.], [0, 4], [5, 0]])):
         for mtype in _mtypes:
-            for b in [numpy.asarray(array2),
+            for b in [np.asarray(array2),
                       tensor.as_tensor_variable(array2),
                       theano.shared(array2)]:
                 for dtype1, dtype2 in [('float64', 'int8'),
@@ -718,18 +715,18 @@ class T_AddMul(unittest.TestCase):
                     self.assertTrue(val.shape == (3, 2))
                     if op is add:
                         self.assertTrue(_is_dense_variable(apb))
-                        self.assertTrue(numpy.all(val == (a + array2)))
-                        ans = numpy.array([[1., 2], [3, 4], [5, 6]])
-                        self.assertTrue(numpy.all(val == ans))
+                        self.assertTrue(np.all(val == (a + array2)))
+                        ans = np.array([[1., 2], [3, 4], [5, 6]])
+                        self.assertTrue(np.all(val == ans))
                         if isinstance(b, theano.Constant):
                             b = b.data
                         if dtype1.startswith('float') and dtype2.startswith('float'):
                             verify_grad_sparse(op, [a, b], structured=True)
                     elif op is mul:
                         self.assertTrue(_is_sparse_variable(apb))
-                        ans = numpy.array([[1, 0], [9, 0], [0, 36]])
-                        self.assertTrue(numpy.all(val.todense() == (a.multiply(array2))))
-                        self.assertTrue(numpy.all(val.todense() == ans))
+                        ans = np.array([[1, 0], [9, 0], [0, 36]])
+                        self.assertTrue(np.all(val.todense() == (a.multiply(array2))))
+                        self.assertTrue(np.all(val.todense() == ans))
                         if isinstance(b, theano.Constant):
                             b = b.data
                         if dtype1.startswith('float') and dtype2.startswith('float'):
@@ -742,7 +739,7 @@ class test_comparison(unittest.TestCase):
 
     # took from tensor basic_test.py
     def _rand_ranged(self, min, max, shape):
-        return numpy.asarray(numpy.random.rand(*shape) * (max - min) + min,
+        return np.asarray(np.random.rand(*shape) * (max - min) + min,
                          dtype=config.floatX)
 
     tests = [lambda x, y: x > y, lambda x, y: x < y,
@@ -768,7 +765,7 @@ class test_comparison(unittest.TestCase):
         m1 = scipyType(random_lil((10, 40), config.floatX, 3))
         m2 = scipyType(random_lil((10, 40), config.floatX, 3))
 
-        self.assertTrue(numpy.array_equal(f(m1, m2).data, testOp(m1, m2).data))
+        self.assertTrue(np.array_equal(f(m1, m2).data, testOp(m1, m2).data))
 
     def __generalized_sd_test(self, theanop, symbolicType, testOp, scipyType):
 
@@ -787,7 +784,7 @@ class test_comparison(unittest.TestCase):
         m1 = scipyType(random_lil((10, 40), config.floatX, 3))
         m2 = self._rand_ranged(1000, -1000, [10, 40])
 
-        self.assertTrue(numpy.array_equal(f(m1, m2).data, testOp(m1, m2).data))
+        self.assertTrue(np.array_equal(f(m1, m2).data, testOp(m1, m2).data))
 
     def __generalized_ds_test(self, theanop, symbolicType, testOp, scipyType):
 
@@ -806,7 +803,7 @@ class test_comparison(unittest.TestCase):
         m1 = scipyType(random_lil((10, 40), config.floatX, 3))
         m2 = self._rand_ranged(1000, -1000, [10, 40])
 
-        self.assertTrue(numpy.array_equal(f(m2, m1).data, testOp(m2, m1).data))
+        self.assertTrue(np.array_equal(f(m2, m1).data, testOp(m2, m1).data))
 
     def test_ss_csr_comparison(self):
 
@@ -845,10 +842,8 @@ class test_comparison(unittest.TestCase):
                               self.testsDic[op], sp.csr_matrix)
 
     def test_equality_case(self):
-        """
-        Test assuring normal behaviour when values
-        in the matrices are equal
-        """
+        # Test assuring normal behaviour when values
+        # in the matrices are equal
 
         scipy_ver = [int(n) for n in scipy.__version__.split('.')[:2]]
 
@@ -859,14 +854,14 @@ class test_comparison(unittest.TestCase):
         y = theano.tensor.matrix()
 
         m1 = sp.csc_matrix((2, 2), dtype=theano.config.floatX)
-        m2 = numpy.asarray([[0, 0], [0, 0]], dtype=theano.config.floatX)
+        m2 = np.asarray([[0, 0], [0, 0]], dtype=theano.config.floatX)
 
         for func in self.testsDic:
 
             op = func(y, x)
             f = theano.function([y, x], op)
 
-            self.assertTrue(numpy.array_equal(f(m2, m1),
+            self.assertTrue(np.array_equal(f(m2, m1),
                                               self.testsDic[func](m2, m1)))
 
 
@@ -876,7 +871,7 @@ class T_conversion(unittest.TestCase):
 
     if 0:
         def test0(self):
-            a = tensor.as_tensor_variable(numpy.random.rand(5))
+            a = tensor.as_tensor_variable(np.random.rand(5))
             s = csc_from_dense(a)
             val = eval_outputs([s])
             self.assertTrue(str(val.dtype) == 'float64')
@@ -884,7 +879,7 @@ class T_conversion(unittest.TestCase):
 
     if 0:
         def test1(self):
-            a = tensor.as_tensor_variable(numpy.random.rand(5))
+            a = tensor.as_tensor_variable(np.random.rand(5))
             s = csr_from_dense(a)
             val = eval_outputs([s])
             self.assertTrue(str(val.dtype) == 'float64')
@@ -898,7 +893,7 @@ class T_conversion(unittest.TestCase):
             d = dense_from_sparse(s)
             val = eval_outputs([d])
             self.assertTrue(str(val.dtype) == s.dtype)
-            self.assertTrue(numpy.all(val[0] == [1, 0, 0, 0, 0]))
+            self.assertTrue(np.all(val[0] == [1, 0, 0, 0, 0]))
 
     def test_todense(self):
         # call sparse_var.todense()
@@ -908,7 +903,7 @@ class T_conversion(unittest.TestCase):
             d = s.toarray()
             val = eval_outputs([d])
             self.assertTrue(str(val.dtype) == s.dtype)
-            self.assertTrue(numpy.all(val[0] == [1, 0, 0, 0, 0]))
+            self.assertTrue(np.all(val[0] == [1, 0, 0, 0, 0]))
 
     @staticmethod
     def check_format_ndim(format, ndim):
@@ -923,8 +918,8 @@ class T_conversion(unittest.TestCase):
         c = d.sum()
         g = tensor.grad(c, x)
         f = theano.function([x], [s, g])
-        f(numpy.array(0, dtype=config.floatX, ndmin=ndim))
-        f(numpy.array(7, dtype=config.floatX, ndmin=ndim))
+        f(np.array(0, dtype=config.floatX, ndmin=ndim))
+        f(np.array(7, dtype=config.floatX, ndmin=ndim))
 
     def test_format_ndim(self):
         for format in 'csc', 'csr':
@@ -972,10 +967,10 @@ class test_csm_properties(unittest.TestCase):
 
                 data, indices, indptr, shape = f(spmat)
 
-                assert numpy.all(data == spmat.data)
-                assert numpy.all(indices == spmat.indices)
-                assert numpy.all(indptr == spmat.indptr)
-                assert numpy.all(shape == spmat.shape)
+                assert np.all(data == spmat.data)
+                assert np.all(indices == spmat.indices)
+                assert np.all(indptr == spmat.indptr)
+                assert np.all(shape == spmat.shape)
 
 
 class test_csm(unittest.TestCase):
@@ -991,13 +986,12 @@ class test_csm(unittest.TestCase):
                 spmat = sp_types[format](random_lil((4, 3), dtype, 3))
 
                 verify_grad_sparse(lambda x: CSM(format)(x, spmat.indices,
-                    spmat.indptr, numpy.asarray(spmat.shape, 'int32')),
+                    spmat.indptr, np.asarray(spmat.shape, 'int32')),
                     [spmat.data], structured=True)
 
     def test_csm_sparser(self):
-        """
-        Test support for gradients sparser than the input.
-        """
+        # Test support for gradients sparser than the input.
+
         sp_types = {'csc': sp.csc_matrix,
                     'csr': sp.csr_matrix}
 
@@ -1018,14 +1012,13 @@ class test_csm(unittest.TestCase):
                 spmat = sp_types[format](random_lil((4, 3), dtype, 3))
 
                 res = f(spmat.data, spmat.indices, spmat.indptr,
-                        numpy.asarray(spmat.shape, 'int32'))
+                        np.asarray(spmat.shape, 'int32'))
 
                 assert len(spmat.data) == len(res)
 
     def test_csm_unsorted(self):
-        """
-        Test support for gradients of unsorted inputs.
-        """
+        # Test support for gradients of unsorted inputs.
+
         sp_types = {'csc': sp.csc_matrix,
                     'csr': sp.csr_matrix}
 
@@ -1063,12 +1056,12 @@ class test_csm(unittest.TestCase):
                 spmat = sp_types[format](random_lil((4, 3), dtype, 3))
 
                 res = f(spmat.data, spmat.indices, spmat.indptr,
-                        numpy.asarray(spmat.shape, 'int32'))
+                        np.asarray(spmat.shape, 'int32'))
 
-                assert numpy.all(res.data == spmat.data)
-                assert numpy.all(res.indices == spmat.indices)
-                assert numpy.all(res.indptr == spmat.indptr)
-                assert numpy.all(res.shape == spmat.shape)
+                assert np.all(res.data == spmat.data)
+                assert np.all(res.indices == spmat.indices)
+                assert np.all(res.indptr == spmat.indptr)
+                assert np.all(res.shape == spmat.shape)
 
 
 class test_structureddot(unittest.TestCase):
@@ -1082,7 +1075,7 @@ class test_structureddot(unittest.TestCase):
         # allocate a random sparse matrix
         spmat = sp.csc_matrix(random_lil((4, 3), 'float32', 3))
 
-        mat = numpy.asarray(numpy.random.randn(3, 2), 'float32')
+        mat = np.asarray(np.random.randn(3, 2), 'float32')
 
         verify_grad_sparse(structured_dot, [spmat, mat], structured=True)
 
@@ -1098,7 +1091,7 @@ class test_structureddot(unittest.TestCase):
         # allocate a random sparse matrix
         spmat = sp.csr_matrix(random_lil((4, 3), 'float64', 3))
 
-        mat = numpy.asarray(numpy.random.randn(3, 2), 'float64')
+        mat = np.asarray(np.random.randn(3, 2), 'float64')
 
         verify_grad_sparse(structured_dot, [spmat, mat], structured=True)
 
@@ -1129,8 +1122,8 @@ class test_structureddot(unittest.TestCase):
                 # an intc vs. int32 bug.
                 # The lil makes an intc on my computer when sparse_dtype
                 # is int32.
-                spmat.dtype = numpy.dtype(sparse_dtype)
-                mat = numpy.asarray(numpy.random.randn(N, K) * 9,
+                spmat.dtype = np.dtype(sparse_dtype)
+                mat = np.asarray(np.random.randn(N, K) * 9,
                                     dtype=dense_dtype)
                 # print 'DTYPES', sparse_dtype, dense_dtype
                 # print 'sym types', a.type, b.type
@@ -1158,9 +1151,9 @@ class test_structureddot(unittest.TestCase):
         spmat = sp.lil_matrix((4, 6), dtype='int64')
         for i in range(5):
             # set non-zeros in random locations (row x, col y)
-            x = numpy.floor(numpy.random.rand() * spmat.shape[0])
-            y = numpy.floor(numpy.random.rand() * spmat.shape[1])
-            spmat[x, y] = numpy.random.rand() * 10
+            x = np.floor(np.random.rand() * spmat.shape[0])
+            y = np.floor(np.random.rand() * spmat.shape[1])
+            spmat[x, y] = np.random.rand() * 10
         spmat = sp.csc_matrix(spmat)
 
         images = tensor.Tensor(dtype='float32',
@@ -1179,12 +1172,12 @@ class test_structureddot(unittest.TestCase):
                 sdcscpresent = True
         assert sdcscpresent
 
-        kernvals = numpy.array(spmat.data[:spmat.size])
+        kernvals = np.array(spmat.data[:spmat.size])
         # print 'kdtype', kernvals.dtype, kernvals.shape,
         # print kernvals.ndim, kernvals.dtype.num
         # print 'type of kernvals = ', kernvals.dtype
         bsize = 3
-        imvals = 1.0 * numpy.array(numpy.arange(bsize * spmat.shape[1]).\
+        imvals = 1.0 * np.array(np.arange(bsize * spmat.shape[1]).\
                                    reshape(bsize, spmat.shape[1]),
                                    dtype='float32')
         outvals = f(kernvals, imvals)
@@ -1230,7 +1223,7 @@ class test_structureddot(unittest.TestCase):
                              (400, 3000, 200, 6000),
                          ]:
             spmat = sp.csc_matrix(random_lil((M, N), sparse_dtype, nnz))
-            mat = numpy.asarray(numpy.random.randn(N, K), dense_dtype)
+            mat = np.asarray(np.random.randn(N, K), dense_dtype)
             theano_times = []
             scipy_times = []
             for i in xrange(5):
@@ -1243,8 +1236,8 @@ class test_structureddot(unittest.TestCase):
                 theano_times.append(t1 - t0)
                 scipy_times.append(t2 - t1)
 
-            theano_time = numpy.min(theano_times)
-            scipy_time = numpy.min(scipy_times)
+            theano_time = np.min(theano_times)
+            scipy_time = np.min(scipy_times)
 
             speedup = scipy_time / theano_time
             # print scipy_times
@@ -1256,7 +1249,8 @@ class test_structureddot(unittest.TestCase):
             overhead_tol = 0.003  # seconds overall
             overhead_rtol = 1.2  # times as long
             utt.assert_allclose(scipy_result, theano_result)
-            if not theano.config.mode in ["DebugMode", "DEBUG_MODE"]:
+            if (theano.config.mode == "FAST_RUN" and
+                theano.config.cxx):
                 self.assertFalse(theano_time > overhead_rtol * scipy_time +
                                  overhead_tol)
 
@@ -1278,7 +1272,7 @@ class test_structureddot(unittest.TestCase):
                              (400, 3000, 200, 6000),
                          ]:
             spmat = sp.csr_matrix(random_lil((M, N), sparse_dtype, nnz))
-            mat = numpy.asarray(numpy.random.randn(N, K), dense_dtype)
+            mat = np.asarray(np.random.randn(N, K), dense_dtype)
             t0 = time.time()
             theano_result = f(spmat, mat)
             t1 = time.time()
@@ -1292,7 +1286,7 @@ class test_structureddot(unittest.TestCase):
             overhead_tol = 0.002  # seconds
             overhead_rtol = 1.1  # times as long
             utt.assert_allclose(scipy_result, theano_result)
-            if (not theano.config.mode in ["DebugMode", "DEBUG_MODE"] and
+            if (theano.config.mode == "FAST_RUN" and
                 theano.config.cxx):
                     self.assertFalse(
                         theano_time > overhead_rtol * scipy_time + overhead_tol,
@@ -1309,18 +1303,18 @@ class DotTests(utt.InferShapeTester):
         utt.seed_rng()
 
         self.x_csr = scipy.sparse.csr_matrix(
-            numpy.random.binomial(1, 0.5, x_size), dtype=theano.config.floatX)
+            np.random.binomial(1, 0.5, x_size), dtype=theano.config.floatX)
         self.x_csc = scipy.sparse.csc_matrix(
-            numpy.random.binomial(1, 0.5, x_size), dtype=theano.config.floatX)
-        self.y = numpy.asarray(numpy.random.uniform(-1, 1, y_size),
+            np.random.binomial(1, 0.5, x_size), dtype=theano.config.floatX)
+        self.y = np.asarray(np.random.uniform(-1, 1, y_size),
                                dtype=theano.config.floatX)
         self.y_csr = scipy.sparse.csr_matrix(
-            numpy.random.binomial(1, 0.5, y_size), dtype=theano.config.floatX)
+            np.random.binomial(1, 0.5, y_size), dtype=theano.config.floatX)
         self.y_csc = scipy.sparse.csc_matrix(
-            numpy.random.binomial(1, 0.5, y_size), dtype=theano.config.floatX)
-        self.v_10 = numpy.asarray(numpy.random.uniform(-1, 1, 10),
+            np.random.binomial(1, 0.5, y_size), dtype=theano.config.floatX)
+        self.v_10 = np.asarray(np.random.uniform(-1, 1, 10),
                                   dtype=theano.config.floatX)
-        self.v_100 = numpy.asarray(numpy.random.uniform(-1, 1, 100),
+        self.v_100 = np.asarray(np.random.uniform(-1, 1, 100),
                                    dtype=theano.config.floatX)
 
     def test_csr_dense(self):
@@ -1386,7 +1380,7 @@ class DotTests(utt.InferShapeTester):
                 # Test infer_shape
                 f_a = theano.function([x, y], theano.sparse.dot(x, y).shape)
                 f_b = lambda x, y: (x * y).shape
-                assert numpy.all(f_a(vx, vy) == f_b(vx, vy))
+                assert np.all(f_a(vx, vy) == f_b(vx, vy))
                 topo = f_a.maker.fgraph.toposort()
                 if theano.config.mode != 'FAST_COMPILE':
                     nb = 0
@@ -1394,22 +1388,6 @@ class DotTests(utt.InferShapeTester):
                     nb = 1
                 assert sum([isinstance(node.op, (Dot, Usmm, UsmmCscDense))
                             for node in topo]) == nb
-
-    def test_cuda(self):
-        import theano.sandbox.cuda as cuda
-        if not cuda.cuda_available:
-            raise SkipTest("Optional package cuda not available")
-
-        a = sparse.csr_matrix('a', dtype='float32')
-        b = cuda.float32_shared_constructor(
-            numpy.random.rand(3, 4).astype('float32'))
-        d = sparse.dot(a, b)
-        f = theano.function([a], d)
-
-        a_val = scipy.sparse.csr_matrix(random_lil((5, 3), 'float32', 5))
-        d_theano = f(a_val)
-        d_numpy = a_val * b.get_value()
-        utt.assert_allclose(d_numpy, d_theano)
 
     def test_int32_dtype(self):
         # Reported on the theano-user mailing-list:
@@ -1429,8 +1407,8 @@ class DotTests(utt.InferShapeTester):
         y = m2.reshape(shape=(2, 4, 9), ndim=3)
 
         f = theano.function(inputs=[I, C], outputs=y)
-        i = numpy.asarray([[4, 3, 7, 7], [2, 8, 4, 5]], dtype=intX)
-        a = numpy.asarray(numpy.random.randint(0, 100, (size, size)),
+        i = np.asarray([[4, 3, 7, 7], [2, 8, 4, 5]], dtype=intX)
+        a = np.asarray(np.random.randint(0, 100, (size, size)),
                           dtype=intX)
         f(i, a)
 
@@ -1441,7 +1419,7 @@ class DotTests(utt.InferShapeTester):
         # allocate a random sparse matrix
         spmat = sp.csr_matrix(random_lil((4, 3), 'float64', 3))
 
-        mat = numpy.asarray(numpy.random.randn(2, 4), 'float64')
+        mat = np.asarray(np.random.randn(2, 4), 'float64')
 
         def buildgraph_T(mat):
             return Dot()(mat, spmat)
@@ -1450,18 +1428,20 @@ class DotTests(utt.InferShapeTester):
 
 
 class UsmmTests(unittest.TestCase):
-    """ Test the Usmm and UsmmCscDense class and related optimization """
+    """
+    Test the Usmm and UsmmCscDense class and related optimization
+    """
     def setUp(self):
         x_size = (10, 100)
         y_size = (100, 200)
         z_size = (x_size[0], y_size[1])
 
-        self.rng = numpy.random.RandomState(seed=utt.fetch_seed())
-        self.x = numpy.asarray(self.rng.binomial(1, 0.5, x_size),
+        self.rng = np.random.RandomState(seed=utt.fetch_seed())
+        self.x = np.asarray(self.rng.binomial(1, 0.5, x_size),
                                dtype=theano.config.floatX)
-        self.y = numpy.asarray(self.rng.uniform(-1, 1, y_size),
+        self.y = np.asarray(self.rng.uniform(-1, 1, y_size),
                                dtype=theano.config.floatX)
-        self.z = numpy.asarray(self.rng.uniform(-1, 1, z_size),
+        self.z = np.asarray(self.rng.uniform(-1, 1, z_size),
                                dtype=theano.config.floatX)
 
     # this is slow, but it's the only test for the op.
@@ -1487,17 +1467,17 @@ class UsmmTests(unittest.TestCase):
             x = mat(format1, 'x', dtype1)
             y = mat(format2, 'y', dtype2)
             a = theano.tensor.scalar('a', dtype=dtype3)
-            z = theano.shared(numpy.asarray(self.z, dtype=dtype4).copy())
+            z = theano.shared(np.asarray(self.z, dtype=dtype4).copy())
 
             f_b = lambda z, a, x, y: z - a * (x * y)
-            x_data = numpy.asarray(self.x, dtype=dtype1)
+            x_data = np.asarray(self.x, dtype=dtype1)
             if format1 != 'dense':
                 x_data = as_sparse_format(x_data, format1)
-            y_data = numpy.asarray(self.y, dtype=dtype2)
+            y_data = np.asarray(self.y, dtype=dtype2)
             if format2 != 'dense':
                 y_data = as_sparse_format(y_data, format2)
-            a_data = numpy.asarray(1.5, dtype=dtype3)
-            z_data = numpy.asarray(self.z, dtype=dtype4)
+            a_data = np.asarray(1.5, dtype=dtype3)
+            z_data = np.asarray(self.z, dtype=dtype4)
 
             f_b_out = f_b(z_data, a_data, x_data, y_data)
 
@@ -1572,12 +1552,13 @@ class UsmmTests(unittest.TestCase):
                 # Usmm is tested at the same time in debugmode
                 # Check if the optimization local_usmm and local_usmm_csx is
                 # applied
-                assert isinstance(topo[0].op,
-                                  theano.sparse.basic.CSMProperties)
-                assert isinstance(topo[1].op, theano.tensor.DimShuffle)
-                assert isinstance(topo[2].op, theano.tensor.Subtensor)
-                assert topo[3].op == theano.tensor.neg
-                assert isinstance(topo[4].op, UsmmCscDense)
+                def check_once(x):
+                    assert sum([isinstance(n.op, x) for n in topo]) == 1
+                check_once(theano.sparse.basic.CSMProperties)
+                check_once(theano.tensor.DimShuffle)
+                check_once(theano.tensor.Subtensor)
+                check_once(UsmmCscDense)
+                check_once(theano.tensor.Elemwise)
                 if inplace:
                     assert topo[4].op.inplace
             elif not fast_compile:
@@ -1603,17 +1584,17 @@ class UsmmTests(unittest.TestCase):
             x = mat(format1, 'x', dtype1)
             y = mat(format2, 'y', dtype2)
             a = theano.tensor.scalar('a', dtype=dtype3)
-            z = theano.shared(numpy.asarray(self.z, dtype=dtype4).copy())
+            z = theano.shared(np.asarray(self.z, dtype=dtype4).copy())
 
             f_b = lambda z, a, x, y: z - a * (x * y)
-            x_data = numpy.asarray(self.x, dtype=dtype1)
+            x_data = np.asarray(self.x, dtype=dtype1)
             if format1 != 'dense':
                 x_data = as_sparse_format(x_data, format1)
-            y_data = numpy.asarray(self.y, dtype=dtype2)
+            y_data = np.asarray(self.y, dtype=dtype2)
             if format2 != 'dense':
                 y_data = as_sparse_format(y_data, format2)
-            a_data = numpy.asarray(1.5, dtype=dtype3)
-            z_data = numpy.asarray(self.z, dtype=dtype4)
+            a_data = np.asarray(1.5, dtype=dtype3)
+            z_data = np.asarray(self.z, dtype=dtype4)
 
             f_b_out = f_b(z_data, a_data, x_data, y_data)
 
@@ -1641,8 +1622,8 @@ class test_zeros_like(unittest.TestCase):
     def test(self):
         x = theano.sparse.csr_matrix()
         f = theano.function([x], theano.sparse.sp_zeros_like(x))
-        vx = scipy.sparse.csr_matrix(numpy.asarray(
-            numpy.random.binomial(1, 0.5, (100, 100)),
+        vx = scipy.sparse.csr_matrix(np.asarray(
+            np.random.binomial(1, 0.5, (100, 100)),
             dtype=theano.config.floatX))
 
         fx = f(vx)
@@ -1666,7 +1647,7 @@ def test_shape():
 
     a = SparseType('csr', dtype=sparse_dtype)()
     f = theano.function([a], a.shape)
-    assert numpy.all(f(sp.csr_matrix(random_lil((100, 10), sparse_dtype, 3)))
+    assert np.all(f(sp.csr_matrix(random_lil((100, 10), sparse_dtype, 3)))
                      == (100, 10))
     if theano.config.mode != 'FAST_COMPILE':
         topo = f.maker.fgraph.toposort()
@@ -1737,9 +1718,8 @@ def test_sparse_shared_memory():
 
 
 def test_size():
-    """
-    Ensure the `size` attribute of sparse matrices behaves as in numpy.
-    """
+    # Ensure the `size` attribute of sparse matrices behaves as in numpy.
+
     for sparse_type in ('csc_matrix', 'csr_matrix'):
         x = getattr(theano.sparse, sparse_type)()
         y = getattr(scipy.sparse, sparse_type)((5, 7)).astype(config.floatX)
@@ -1765,12 +1745,12 @@ class ColScaleCSCTester(utt.InferShapeTester):
         for format in sparse.sparse_formats:
             variable, data = sparse_random_inputs(format, shape=(8, 10))
             variable.append(tensor.vector())
-            data.append(numpy.random.random(10).astype(config.floatX))
+            data.append(np.random.random(10).astype(config.floatX))
 
             f = theano.function(variable, self.op(*variable))
 
             tested = f(*data)
-            x, s = data[0].toarray(), data[1][numpy.newaxis, :]
+            x, s = data[0].toarray(), data[1][np.newaxis, :]
             expected = x * s
 
             assert tested.format == format
@@ -1781,7 +1761,7 @@ class ColScaleCSCTester(utt.InferShapeTester):
                             ('csr', sparse.RowScaleCSC)]:
             variable, data = sparse_random_inputs(format, shape=(8, 10))
             variable.append(tensor.vector())
-            data.append(numpy.random.random(10).astype(config.floatX))
+            data.append(np.random.random(10).astype(config.floatX))
 
             self._compile_and_check(variable,
                                     [self.op(*variable)],
@@ -1792,7 +1772,7 @@ class ColScaleCSCTester(utt.InferShapeTester):
         for format in sparse.sparse_formats:
             variable, data = sparse_random_inputs(format, shape=(8, 10))
             variable.append(tensor.vector())
-            data.append(numpy.random.random(10).astype(config.floatX))
+            data.append(np.random.random(10).astype(config.floatX))
 
             verify_grad_sparse(self.op, data, structured=True)
 
@@ -1806,12 +1786,12 @@ class RowScaleCSCTester(utt.InferShapeTester):
         for format in sparse.sparse_formats:
             variable, data = sparse_random_inputs(format, shape=(8, 10))
             variable.append(tensor.vector())
-            data.append(numpy.random.random(8).astype(config.floatX))
+            data.append(np.random.random(8).astype(config.floatX))
 
             f = theano.function(variable, self.op(*variable))
 
             tested = f(*data)
-            x, s = data[0].toarray(), data[1][:, numpy.newaxis]
+            x, s = data[0].toarray(), data[1][:, np.newaxis]
             expected = x * s
 
             assert tested.format == format
@@ -1822,7 +1802,7 @@ class RowScaleCSCTester(utt.InferShapeTester):
                             ('csr', sparse.ColScaleCSC)]:
             variable, data = sparse_random_inputs(format, shape=(8, 10))
             variable.append(tensor.vector())
-            data.append(numpy.random.random(8).astype(config.floatX))
+            data.append(np.random.random(8).astype(config.floatX))
 
             self._compile_and_check(variable,
                                     [self.op(*variable)],
@@ -1833,7 +1813,7 @@ class RowScaleCSCTester(utt.InferShapeTester):
         for format in sparse.sparse_formats:
             variable, data = sparse_random_inputs(format, shape=(8, 10))
             variable.append(tensor.vector())
-            data.append(numpy.random.random(8).astype(config.floatX))
+            data.append(np.random.random(8).astype(config.floatX))
 
             verify_grad_sparse(self.op, data, structured=True)
 
@@ -1935,12 +1915,12 @@ class SquareDiagonalTester(utt.InferShapeTester):
         for format in sparse.sparse_formats:
             for size in range(5, 9):
                 variable = [tensor.vector()]
-                data = [numpy.random.random(size).astype(config.floatX)]
+                data = [np.random.random(size).astype(config.floatX)]
 
                 f = theano.function(variable, self.op(*variable))
                 tested = f(*data).toarray()
 
-                expected = numpy.diag(*data)
+                expected = np.diag(*data)
                 utt.assert_allclose(expected, tested)
                 assert tested.dtype == expected.dtype
                 assert tested.shape == expected.shape
@@ -1949,7 +1929,7 @@ class SquareDiagonalTester(utt.InferShapeTester):
         for format in sparse.sparse_formats:
             for size in range(5, 9):
                 variable = [tensor.vector()]
-                data = [numpy.random.random(size).astype(config.floatX)]
+                data = [np.random.random(size).astype(config.floatX)]
 
                 self._compile_and_check(variable,
                                         [self.op(*variable)],
@@ -1960,7 +1940,7 @@ class SquareDiagonalTester(utt.InferShapeTester):
         for format in sparse.sparse_formats:
             for size in range(5, 9):
                 variable = [tensor.vector()]
-                data = [numpy.random.random(size).astype(config.floatX)]
+                data = [np.random.random(size).astype(config.floatX)]
 
                 verify_grad_sparse(
                     self.op,
@@ -2091,7 +2071,7 @@ class Remove0Tester(utt.InferShapeTester):
                     assert target.has_sorted_indices
 
     def test_infer_shape(self):
-        mat = (numpy.arange(12) + 1).reshape((4, 3))
+        mat = (np.arange(12) + 1).reshape((4, 3))
         mat[0, 1] = mat[1, 0] = mat[2, 2] = 0
 
         x_csc = theano.sparse.csc_matrix(dtype=theano.config.floatX)
@@ -2109,7 +2089,7 @@ class Remove0Tester(utt.InferShapeTester):
                                 self.op_class)
 
     def test_grad(self):
-        mat = (numpy.arange(9) + 1).reshape((3, 3))
+        mat = (np.arange(9) + 1).reshape((3, 3))
         mat[0, 1] = mat[1, 0] = mat[2, 2] = 0
 
         mat_csc = sp.csc_matrix(mat, dtype=theano.config.floatX)
@@ -2121,7 +2101,7 @@ class Remove0Tester(utt.InferShapeTester):
 
 class Test_getitem(unittest.TestCase):
     def setUp(self):
-        self.rng = numpy.random.RandomState(utt.fetch_seed())
+        self.rng = np.random.RandomState(utt.fetch_seed())
 
     def test_GetItemList(self):
 
@@ -2152,7 +2132,7 @@ class Test_getitem(unittest.TestCase):
     def test_get_item_list_grad(self):
         op = theano.sparse.basic.GetItemList()
         def op_with_fixed_index(x):
-            return op(x, index=numpy.asarray([0, 1]))
+            return op(x, index=np.asarray([0, 1]))
 
         x, x_val = sparse_random_inputs("csr", (4, 5))
 
@@ -2174,8 +2154,8 @@ class Test_getitem(unittest.TestCase):
         t_geta = fa(A[0])
         t_getb = fb(B[0])
 
-        s_geta = numpy.asarray(scipy.sparse.csr_matrix(A[0])[[0, 0, 1, 3], [0, 1, 2, 4]])
-        s_getb = numpy.asarray(scipy.sparse.csc_matrix(B[0])[[0, 0, 1, 3], [0, 1, 2, 4]])
+        s_geta = np.asarray(scipy.sparse.csr_matrix(A[0])[[0, 0, 1, 3], [0, 1, 2, 4]])
+        s_getb = np.asarray(scipy.sparse.csc_matrix(B[0])[[0, 0, 1, 3], [0, 1, 2, 4]])
 
         utt.assert_allclose(t_geta, s_geta)
         utt.assert_allclose(t_getb, s_getb)
@@ -2194,7 +2174,7 @@ class Test_getitem(unittest.TestCase):
     def test_get_item_2lists_grad(self):
         op = theano.sparse.basic.GetItem2Lists()
         def op_with_fixed_index(x):
-            return op(x, ind1=numpy.asarray([0, 1]), ind2=numpy.asarray([2, 3]))
+            return op(x, ind1=np.asarray([0, 1]), ind2=np.asarray([2, 3]))
 
         x, x_val = sparse_random_inputs("csr", (4, 5))
 
@@ -2241,7 +2221,7 @@ class Test_getitem(unittest.TestCase):
                 r1 = f1(vx, m, n, p, q)
                 t1 = vx[m:n, p:q]
             assert r1.shape == t1.shape
-            assert numpy.all(t1.toarray() == r1.toarray())
+            assert np.all(t1.toarray() == r1.toarray())
 
             """
             Important: based on a discussion with both Fred and James
@@ -2254,25 +2234,25 @@ class Test_getitem(unittest.TestCase):
             r2 = f2(vx, m, n, p)
             t2 = vx[m:n, p]
             assert r2.shape == t2.shape
-            assert numpy.all(t2.toarray() == r2.toarray())
+            assert np.all(t2.toarray() == r2.toarray())
 
             f3 = theano.function([x, a, b, c], x[a, b:c])
             r3 = f3(vx, m, n, p)
             t3 = vx[m, n:p]
             assert r3.shape == t3.shape
-            assert numpy.all(t3.toarray() == r3.toarray())
+            assert np.all(t3.toarray() == r3.toarray())
 
             f5 = theano.function([x], x[1:2,3])
             r5 = f5(vx)
             t5 = vx[1:2, 3]
             assert r5.shape == t5.shape
-            assert numpy.all(r5.toarray() == t5.toarray())
+            assert np.all(r5.toarray() == t5.toarray())
 
             f7 = theano.function([x], x[50])
             r7 = f7(vx)
             t7 = vx[50]
             assert r7.shape == t7.shape
-            assert numpy.all(r7.toarray() == t7.toarray())
+            assert np.all(r7.toarray() == t7.toarray())
             """
             if is_supported_version:
                 f4 = theano.function([x, a, b, e], x[a:b:e])
@@ -2283,7 +2263,7 @@ class Test_getitem(unittest.TestCase):
                 r4 = f4(vx, m, n)
                 t4 = vx[m:n]
             assert r4.shape == t4.shape
-            assert numpy.all(t4.toarray() == r4.toarray())
+            assert np.all(t4.toarray() == r4.toarray())
 
             #-----------------------------------------------------------
             # test cases using int indexing instead of theano variable
@@ -2291,7 +2271,7 @@ class Test_getitem(unittest.TestCase):
             r6 = f6(vx)
             t6 = vx[1:10:j, 10:20:k]
             assert r6.shape == t6.shape
-            assert numpy.all(r6.toarray() == t6.toarray())
+            assert np.all(r6.toarray() == t6.toarray())
 
             #----------------------------------------------------------
             # test cases with indexing both with theano variable and int
@@ -2304,13 +2284,13 @@ class Test_getitem(unittest.TestCase):
                 r8 = f8(vx, m, n)
                 t8 = vx[m:n, 10:20]
             assert r8.shape == t8.shape
-            assert numpy.all(r8.toarray() == t8.toarray())
+            assert np.all(r8.toarray() == t8.toarray())
 
             f9 = theano.function([x, a, b], x[1:a:j, 1:b:k])
             r9 = f9(vx, p, q)
             t9 = vx[1:p:j, 1:q:k]
             assert r9.shape == t9.shape
-            assert numpy.all(r9.toarray() == t9.toarray())
+            assert np.all(r9.toarray() == t9.toarray())
 
             #-----------------------------------------------------------
             # Test mixing None and variables
@@ -2318,13 +2298,13 @@ class Test_getitem(unittest.TestCase):
             r10 = f10(vx, p, q)
             t10 = vx[:p, :q]
             assert r10.shape == t10.shape
-            assert numpy.all(r10.toarray() == t10.toarray())
+            assert np.all(r10.toarray() == t10.toarray())
 
             f11 = theano.function([x, a], x[:, a:])
             r11 = f11(vx, p)
             t11 = vx[:, p:]
             assert r11.shape == t11.shape
-            assert numpy.all(r11.toarray() == t11.toarray())
+            assert np.all(r11.toarray() == t11.toarray())
 
             # Test that is work with shared variable
             sx = theano.shared(vx)
@@ -2332,7 +2312,7 @@ class Test_getitem(unittest.TestCase):
             r12 = f12(p)
             t12 = vx[:, p:]
             assert r12.shape == t12.shape
-            assert numpy.all(r12.toarray() == t12.toarray())
+            assert np.all(r12.toarray() == t12.toarray())
 
             #------------------------------------------------------------
             # Invalid things
@@ -2381,25 +2361,25 @@ class Test_getitem(unittest.TestCase):
             r1 = f1(vx, 10, 10)
             t1 = vx[10, 10]
             assert r1.shape == t1.shape
-            assert numpy.all(t1 == r1)
+            assert np.all(t1 == r1)
 
             f2 = theano.function([x, a], x[50, a])
             r2 = f2(vx, m)
             t2 = vx[50, m]
             assert r2.shape == t2.shape
-            assert numpy.all(t2 == r2)
+            assert np.all(t2 == r2)
 
             f3 = theano.function([x, a], x[a, 50])
             r3 = f3(vx, m)
             t3 = vx[m, 50]
             assert r3.shape == t3.shape
-            assert numpy.all(t3 == r3)
+            assert np.all(t3 == r3)
 
             f4 = theano.function([x], x[50, 42])
             r4 = f4(vx)
             t4 = vx[m, n]
             assert r3.shape == t3.shape
-            assert numpy.all(t4 == r4)
+            assert np.all(t4 == r4)
 
             # Test that is work with shared variable
             sx = theano.shared(vx)
@@ -2407,7 +2387,7 @@ class Test_getitem(unittest.TestCase):
             r1 = f1(10, 10)
             t1 = vx[10, 10]
             assert r1.shape == t1.shape
-            assert numpy.all(t1 == r1)
+            assert np.all(t1 == r1)
 
 
 class CastTester(utt.InferShapeTester):
@@ -2493,8 +2473,8 @@ def _format_info(nb):
 
 
 class _HVStackTester(utt.InferShapeTester):
-    """Test for both HStack and VStack.
-
+    """
+    Test for both HStack and VStack.
     """
     nb = 3  # Number of sparse matrix to stack
     x, mat = _format_info(nb)
@@ -2541,7 +2521,8 @@ class _HVStackTester(utt.InferShapeTester):
 
 
 def _hv_switch(op, expected_function):
-    """Return the right test class for HStack or VStack.
+    """
+    Return the right test class for HStack or VStack.
 
     :Parameters:
     - `op`: HStack or VStack class.
@@ -2573,8 +2554,8 @@ class AddSSDataTester(utt.InferShapeTester):
         for format in sparse.sparse_formats:
             variable = getattr(theano.sparse, format + '_matrix')
 
-            rand = numpy.array(
-                numpy.random.randint(1, 4, size=(3, 4)) - 1,
+            rand = np.array(
+                np.random.randint(1, 4, size=(3, 4)) - 1,
                 dtype=theano.config.floatX)
             constant = as_sparse_format(rand, format)
 
@@ -2610,7 +2591,8 @@ class AddSSDataTester(utt.InferShapeTester):
 
 def elemwise_checker(op, expected_f, gap=None, test_dtypes=None,
                      grad_test=True, name=None, gap_grad=None):
-    """Return the appropriate test class for the elemwise on sparse.
+    """
+    Return the appropriate test class for the elemwise on sparse.
 
     :param op: Op to test.
     :expected_f: Function use to compare. This function must act
@@ -2779,10 +2761,8 @@ def elemwise_checker(op, expected_f, gap=None, test_dtypes=None,
 
 
 def test_hstack_vstack():
-    """
-    Tests sparse.hstack and sparse.vstack (as opposed to the HStack and VStack
-    classes that they wrap).
-    """
+    # Tests sparse.hstack and sparse.vstack (as opposed to the HStack and VStack
+    # classes that they wrap).
 
     def make_block(dtype):
         return theano.sparse.csr_matrix(name="%s block" % dtype,
@@ -2810,7 +2790,8 @@ def test_hstack_vstack():
 
 
 def structure_function(f, index=0):
-    """Decorator to structure a function wich
+    """
+    Decorator to structure a function which
     apply on dense matrix.
 
     Here, the inputs of the function must be
@@ -2818,7 +2799,7 @@ def structure_function(f, index=0):
     determined by finding the zeros.
 
     :param index: The index of the parameter
-                  from wich the function must
+                  from which the function must
                   be structured.
 
     :return: The structured function for its
@@ -2834,7 +2815,7 @@ def structure_function(f, index=0):
 
 StructuredSigmoidTester = elemwise_checker(
     sparse.structured_sigmoid,
-    structure_function(lambda x: 1.0 / (1.0 + numpy.exp(-x))),
+    structure_function(lambda x: 1.0 / (1.0 + np.exp(-x))),
     test_dtypes=[m for m in sparse.all_dtypes
                  if (not m in sparse.complex_dtypes and
                      not m.startswith('uint'))],
@@ -2843,83 +2824,83 @@ StructuredSigmoidTester = elemwise_checker(
 
 StructuredExpTester = elemwise_checker(
     sparse.structured_exp,
-    structure_function(numpy.exp),
+    structure_function(np.exp),
     name='StructuredExpTester')
 
 StructuredLogTester = elemwise_checker(
     sparse.structured_log,
-    structure_function(numpy.log),
+    structure_function(np.log),
     gap=(0.5, 10),
     name='StructuredLogTester')
 
 StructuredPowTester = elemwise_checker(
     lambda x: sparse.structured_pow(x, 2),
-    structure_function(lambda x: numpy.power(x, 2)),
+    structure_function(lambda x: np.power(x, 2)),
     name='StructuredPowTester')
 
 StructuredMinimumTester = elemwise_checker(
     lambda x: structured_minimum(x, 2),
-    structure_function(lambda x: numpy.minimum(x, 2)),
+    structure_function(lambda x: np.minimum(x, 2)),
     name='StructuredMinimumTester')
 
 StructuredMaximumTester = elemwise_checker(
     lambda x: structured_maximum(x, 2),
-    structure_function(lambda x: numpy.maximum(x, 2)),
+    structure_function(lambda x: np.maximum(x, 2)),
     name='StructuredMaximumTester')
 
 StructuredAddTester = elemwise_checker(
     lambda x: structured_add(x, 2),
-    structure_function(lambda x: numpy.add(x, 2)),
+    structure_function(lambda x: np.add(x, 2)),
     name='StructuredAddTester')
 
 SinTester = elemwise_checker(
     sparse.sin,
-    numpy.sin)
+    np.sin)
 
 TanTester = elemwise_checker(
     sparse.tan,
-    numpy.tan,
+    np.tan,
     gap=(-1, 1))
 
 ArcsinTester = elemwise_checker(
     sparse.arcsin,
-    numpy.arcsin,
+    np.arcsin,
     gap=(-1, 1),
     gap_grad=(-0.99, 0.99))
 
 ArctanTester = elemwise_checker(
     sparse.arctan,
-    numpy.arctan)
+    np.arctan)
 
 SinhTester = elemwise_checker(
     sparse.sinh,
-    numpy.sinh)
+    np.sinh)
 
 ArcsinhTester = elemwise_checker(
     sparse.arcsinh,
-    numpy.arcsinh,
+    np.arcsinh,
     gap=(-1, 1))
 
 TanhTester = elemwise_checker(
     sparse.tanh,
-    numpy.tanh,
+    np.tanh,
     gap=(-1, 1))
 
 ArctanhTester = elemwise_checker(
     sparse.arctanh,
-    numpy.arctanh,
+    np.arctanh,
     gap=(-0.9, 1),
     gap_grad=(-0.9, 0.95))
 
 RintTester = elemwise_checker(
     sparse.rint,
-    numpy.rint,
+    np.rint,
     grad_test=False,
     test_dtypes=sparse.float_dtypes)
 
 SgnTester = elemwise_checker(
     sparse.sgn,
-    numpy.sign,
+    np.sign,
     grad_test=False,
     test_dtypes=[m for m in sparse.all_dtypes
                  if (not m in sparse.complex_dtypes and
@@ -2927,45 +2908,46 @@ SgnTester = elemwise_checker(
 
 CeilTester = elemwise_checker(
     sparse.ceil,
-    numpy.ceil,
+    np.ceil,
     grad_test=False,
     test_dtypes=[m for m in sparse.all_dtypes
                  if not m in sparse.complex_dtypes])
 
 FloorTester = elemwise_checker(
     sparse.floor,
-    numpy.floor,
+    np.floor,
     grad_test=False,
     test_dtypes=[m for m in sparse.all_dtypes
                  if not m in sparse.complex_dtypes])
 
 Log1pTester = elemwise_checker(
     sparse.log1p,
-    numpy.log1p,
+    np.log1p,
     gap=(0.5, 10))
 
 Expm1Tester = elemwise_checker(
     sparse.expm1,
-    numpy.expm1)
+    np.expm1)
 
 Deg2radTester = elemwise_checker(
     sparse.deg2rad,
-    numpy.deg2rad,
+    np.deg2rad,
     test_dtypes=[m for m in sparse.all_dtypes
                  if not m in sparse.complex_dtypes])
 
 Rad2degTester = elemwise_checker(
     sparse.rad2deg,
-    numpy.rad2deg,
+    np.rad2deg,
     test_dtypes=[m for m in sparse.all_dtypes
                  if not m in sparse.complex_dtypes])
 
 
 TruncTester = elemwise_checker(
     sparse.trunc,
-    numpy.trunc,
+    np.trunc,
     test_dtypes=[m for m in sparse.all_dtypes
-                 if not m in sparse.complex_dtypes])
+                 if not m in sparse.complex_dtypes],
+    grad_test=False)
 
 
 SqrTester = elemwise_checker(
@@ -2974,12 +2956,12 @@ SqrTester = elemwise_checker(
 
 SqrtTester = elemwise_checker(
     sparse.sqrt,
-    numpy.sqrt,
+    np.sqrt,
     gap=(0, 10))
 
 ConjTester = elemwise_checker(
     sparse.conj,
-    numpy.conj,
+    np.conj,
     grad_test=False)
 
 
@@ -2994,7 +2976,7 @@ class MulSVTester(unittest.TestCase):
         for format in ['csr', 'csc']:
             for dtype in ['float32', 'float64']:
                 spmat = sp_types[format](random_lil((4, 3), dtype, 3))
-                mat = numpy.asarray(numpy.random.rand(3), dtype=dtype)
+                mat = np.asarray(np.random.rand(3), dtype=dtype)
 
                 verify_grad_sparse(mul_s_v,
                                    [spmat, mat],
@@ -3011,7 +2993,7 @@ class MulSVTester(unittest.TestCase):
                 f = theano.function([x, y], mul_s_v(x, y))
 
                 spmat = sp_types[format](random_lil((4, 3), dtype, 3))
-                mat = numpy.asarray(numpy.random.rand(3), dtype=dtype)
+                mat = np.asarray(np.random.rand(3), dtype=dtype)
 
                 out = f(spmat, mat)
 
@@ -3029,7 +3011,7 @@ class StructuredAddSVTester(unittest.TestCase):
         for format in ['csr', 'csc']:
             for dtype in ['float32', 'float64']:
                 spmat = sp_types[format](random_lil((4, 3), dtype, 3))
-                mat = numpy.asarray(numpy.random.rand(3), dtype=dtype)
+                mat = np.asarray(np.random.rand(3), dtype=dtype)
 
                 verify_grad_sparse(structured_add_s_v,
                                    [spmat, mat],
@@ -3047,8 +3029,8 @@ class StructuredAddSVTester(unittest.TestCase):
 
                 spmat = sp_types[format](random_lil((4, 3), dtype, 3))
                 spones = spmat.copy()
-                spones.data = numpy.ones_like(spones.data)
-                mat = numpy.asarray(numpy.random.rand(3), dtype=dtype)
+                spones.data = np.ones_like(spones.data)
+                mat = np.asarray(np.random.rand(3), dtype=dtype)
 
                 out = f(spmat, mat)
 
@@ -3076,7 +3058,7 @@ class TrueDotTester(utt.InferShapeTester):
                 tested = f(*data)
 
                 x, y = [m.toarray() for m in data]
-                expected = numpy.dot(x, y)
+                expected = np.dot(x, y)
 
                 assert tested.format == format
                 assert tested.dtype == expected.dtype
@@ -3098,7 +3080,7 @@ class TrueDotTester(utt.InferShapeTester):
                 f = theano.function(variable, self.op(*variable))
 
                 tested = f(*data)
-                expected = numpy.dot(data[0].toarray(), data[1])
+                expected = np.dot(data[0].toarray(), data[1])
 
                 assert tested.format == format
                 assert tested.dtype == expected.dtype
@@ -3146,11 +3128,11 @@ class SamplingDotTester(utt.InferShapeTester):
     x = [tensor.matrix() for t in range(2)]
     x.append(sparse.csr_matrix())
     # unsquare shape
-    a = [numpy.array(numpy.random.randint(1, 6, size=(4, 3)) - 1,
+    a = [np.array(np.random.randint(1, 6, size=(4, 3)) - 1,
                      dtype=theano.config.floatX),
-         numpy.array(numpy.random.randint(1, 6, size=(5, 3)) - 1,
+         np.array(np.random.randint(1, 6, size=(5, 3)) - 1,
                      dtype=theano.config.floatX),
-         numpy.array(numpy.random.randint(1, 3, size=(4, 5)) - 1,
+         np.array(np.random.randint(1, 3, size=(4, 5)) - 1,
                      dtype=theano.config.floatX)
          ]
     a[2] = sp.csr_matrix(a[2])
@@ -3166,7 +3148,21 @@ class SamplingDotTester(utt.InferShapeTester):
 
         tested = f(*self.a)
         x, y, p = self.a
-        expected = p.multiply(numpy.dot(x, y.T))
+        expected = p.multiply(np.dot(x, y.T))
+
+        utt.assert_allclose(as_ndarray(expected), tested.toarray())
+        assert tested.format == 'csr'
+        assert tested.dtype == expected.dtype
+
+    def test_negative_stride(self):
+        f = theano.function(
+            self.x,
+            sampling_dot(*self.x))
+
+        a2 = [self.a[0][::-1,:], self.a[1][:,::-1], self.a[2]]
+        tested = f(*a2)
+        x, y, p = a2
+        expected = p.multiply(np.dot(x, y.T))
 
         utt.assert_allclose(as_ndarray(expected), tested.toarray())
         assert tested.format == 'csr'
@@ -3186,7 +3182,7 @@ class SamplingDotTester(utt.InferShapeTester):
 
 
 import theano.tensor.tests.test_sharedvar
-test_shared_options = theano.tensor.tests.test_sharedvar.makeSharedTester(
+@theano.tensor.tests.test_sharedvar.makeSharedTester(
     shared_constructor_=theano.sparse.shared,
     dtype_='float64',
     get_value_borrow_true_alias_=True,
@@ -3198,10 +3194,12 @@ test_shared_options = theano.tensor.tests.test_sharedvar.makeSharedTester(
     internal_type_=scipy.sparse.csc_matrix,
     test_internal_type_=scipy.sparse.issparse,
     theano_fct_=lambda a: dense_from_sparse(a * 2.),
-    ref_fct_=lambda a: numpy.asarray((a * 2).todense()),
+    ref_fct_=lambda a: np.asarray((a * 2).todense()),
     cast_value_=scipy.sparse.csr_matrix,
-    name='test_shared_options',
+    expect_fail_fast_shape_inplace=False,
 )
+class test_shared_options(object):
+    pass
 
 
 if __name__ == '__main__':

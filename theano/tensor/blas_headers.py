@@ -9,6 +9,7 @@ import logging
 import textwrap
 import sys
 import os
+from os.path import dirname
 
 from theano import config
 from theano.gof.cmodule import GCC_compiler
@@ -729,6 +730,28 @@ def cblas_header_text():
 
 def blas_header_text():
     """C header for the fortran blas interface"""
+
+    blas_code = ""
+    if not config.blas.ldflags:
+        # Include the Numpy version implementation of [sd]gemm_.
+        current_filedir = dirname(__file__)
+        blas_common_filepath = os.path.join(current_filedir, 'c_code', 'alt_blas_common.h')
+        blas_template_filepath = os.path.join(current_filedir, 'c_code', 'alt_blas_template.c')
+        common_code = ""
+        sblas_code = ""
+        dblas_code = ""
+        with open(blas_common_filepath) as code:
+            common_code = code.read()
+        with open(blas_template_filepath) as code:
+            template_code = code.read()
+            sblas_code = template_code % {"float_type": "float", "float_size": 4, "npy_float": "NPY_FLOAT32", "precision": "s"}
+            dblas_code = template_code % {"float_type": "double", "float_size": 8, "npy_float": "NPY_FLOAT64", "precision": "d"}
+        if not common_code or not template_code:
+            raise IOError("Unable to load NumPy implementation of BLAS functions from C source files.")
+        blas_code += common_code
+        blas_code += sblas_code
+        blas_code += dblas_code
+
     header = """
     extern "C"
     {
@@ -958,7 +981,11 @@ def blas_header_text():
                     }
                     """)
 
-    return header
+    return header + blas_code
+
+
+if not config.blas.ldflags:
+    _logger.warning('Using NumPy C-API based implementation for BLAS functions.')
 
 
 def mkl_threads_text():
@@ -1006,7 +1033,7 @@ def openblas_threads_text():
 
 def blas_header_version():
     # Version for the base header
-    version = (1,)
+    version = (9,)
     if detect_macos_sdot_bug():
         if detect_macos_sdot_bug.fix_works:
             # Version with fix
@@ -1153,7 +1180,7 @@ def ____gemm_code(check_ab, a_init, b_init):
         _dot_execute_fail:
         if (error_string == NULL)
             PyErr_SetString(PyExc_ValueError,
-                "dot->execute() cant run on these inputs");
+                "dot->execute() can't run on these inputs");
         return -1;
 
         /* v 1 */

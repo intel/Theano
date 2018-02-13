@@ -8,7 +8,6 @@ from copy import copy
 import logging
 import os
 import sys
-import warnings
 import hashlib
 
 import numpy as np
@@ -20,7 +19,6 @@ from theano import gof
 from theano import config
 from theano.gof import Op, Apply
 from theano.compile import Function, debugmode, SharedVariable
-from theano.compile.profilemode import ProfileMode
 
 pydot_imported = False
 pydot_imported_msg = ""
@@ -62,7 +60,7 @@ def debugprint(obj, depth=-1, print_type=False,
                used_ids=None):
     """Print a computation graph as text to stdout or a file.
 
-    :type obj: Variable, Apply, or Function instance
+    :type obj: :class:`~theano.gof.Variable`, Apply, or Function instance
     :param obj: symbolic thing to print
     :type depth: integer
     :param depth: print graph to this depth (-1 for unlimited)
@@ -91,7 +89,7 @@ def debugprint(obj, depth=-1, print_type=False,
          an Apply node.
     :type used_ids: dict or None
     :param used_ids: the id to use for some object, but maybe we only
-         refered to it yet.
+         referred to it yet.
 
     :returns: string if `file` == 'str', else file arg
 
@@ -312,7 +310,7 @@ class Print(Op):
         self.global_fn = global_fn
 
     def make_node(self, xin):
-        xout = xin.type.make_variable()
+        xout = xin.type()
         return Apply(op=self, inputs=[xin], outputs=[xout])
 
     def perform(self, node, inputs, output_storage):
@@ -702,7 +700,7 @@ def pydotprint(fct, outfile=None,
             the border
     :param colorCodes: dictionary with names of ops as keys and colors as
             values
-    :param cond_highlight: Highlights a lazy if by sorrounding each of the 3
+    :param cond_highlight: Highlights a lazy if by surrounding each of the 3
                 possible categories of ops with a border. The categories
                 are: ops that are on the left branch, ops that are on the
                 right branch, ops that are on both branches
@@ -771,15 +769,10 @@ def pydotprint(fct, outfile=None,
                                config.device + '.' + format)
 
     if isinstance(fct, Function):
-        mode = fct.maker.mode
         profile = getattr(fct, "profile", None)
-        if (not isinstance(mode, ProfileMode) or
-                fct not in mode.profile_stats):
-                mode = None
         outputs = fct.maker.fgraph.outputs
         topo = fct.maker.fgraph.toposort()
     elif isinstance(fct, gof.FunctionGraph):
-        mode = None
         profile = None
         outputs = fct.outputs
         topo = fct.toposort()
@@ -792,7 +785,6 @@ def pydotprint(fct, outfile=None,
         assert all(isinstance(v, gof.Variable) for v in fct)
         fct = gof.FunctionGraph(inputs=gof.graph.inputs(fct),
                                 outputs=fct)
-        mode = None
         profile = None
         outputs = fct.outputs
         topo = fct.toposort()
@@ -880,22 +872,10 @@ def pydotprint(fct, outfile=None,
         if node in apply_name_cache:
             return apply_name_cache[node], apply_name_id[node]
         prof_str = ''
-        if mode:
-            time = mode.profile_stats[fct].apply_time.get(node, 0)
-            # second, % total time in profiler, %fct time in profiler
-            if mode.local_time == 0:
-                pt = 0
-            else:
-                pt = time * 100 / mode.local_time
-            if mode.profile_stats[fct].fct_callcount == 0:
-                pf = 0
-            else:
-                pf = time * 100 / mode.profile_stats[fct].fct_call_time
-            prof_str = '   (%.3fs,%.3f%%,%.3f%%)' % (time, pt, pf)
-        elif profile:
+        if profile:
             time = profile.apply_time.get(node, 0)
             # second, %fct time in profiler
-            if profile.fct_callcount == 0:
+            if profile.fct_callcount == 0 or profile.fct_call_time == 0:
                 pf = 0
             else:
                 pf = time * 100 / profile.fct_call_time
@@ -1111,175 +1091,6 @@ def pydotprint(fct, outfile=None,
             print('The output file is available at', outfile)
 
 
-def pydotprint_variables(vars,
-                         outfile=None,
-                         format='png',
-                         depth=-1,
-                         high_contrast=True, colorCodes=None,
-                         max_label_size=50,
-                         var_with_name_simple=False):
-    '''DEPRECATED: use pydotprint() instead.
-
-    Identical to pydotprint just that it starts from a variable
-    instead of a compiled function. Could be useful ?
-
-    '''
-
-    warnings.warn("pydotprint_variables() is deprecated."
-                  " Use pydotprint() instead.")
-
-    if colorCodes is None:
-        colorCodes = default_colorCodes
-    if outfile is None:
-        outfile = os.path.join(config.compiledir, 'theano.pydotprint.' +
-                               config.device + '.' + format)
-    if not pydot_imported:
-        raise RuntimeError("Failed to import pydot. You must install pydot"
-                           " and graphviz for `pydotprint_variables` to work.",
-                           pydot_imported_msg)
-    if pd.__name__ == "pydot_ng":
-        raise RuntimeError("pydotprint_variables do not support pydot_ng."
-                           "pydotprint_variables is also deprecated, "
-                           "use pydotprint() that support pydot_ng")
-    g = pd.Dot()
-    my_list = {}
-    orphanes = []
-    if type(vars) not in (list, tuple):
-        vars = [vars]
-    var_str = {}
-
-    def var_name(var):
-        if var in var_str:
-            return var_str[var]
-
-        if var.name is not None:
-            if var_with_name_simple:
-                varstr = var.name
-            else:
-                varstr = 'name=' + var.name + " " + str(var.type)
-        elif isinstance(var, gof.Constant):
-            dstr = 'val=' + str(var.data)
-            if '\n' in dstr:
-                dstr = dstr[:dstr.index('\n')]
-            varstr = '%s %s' % (dstr, str(var.type))
-        else:
-            # a var id is needed as otherwise var with the same type will be
-            # merged in the graph.
-            varstr = str(var.type)
-
-        varstr += ' ' + str(len(var_str))
-        if len(varstr) > max_label_size:
-            varstr = varstr[:max_label_size - 3] + '...'
-        var_str[var] = varstr
-        return varstr
-
-    def apply_name(node):
-        name = str(node.op).replace(':', '_')
-        if len(name) > max_label_size:
-            name = name[:max_label_size - 3] + '...'
-        return name
-
-    def plot_apply(app, d):
-        if d == 0:
-            return
-        if app in my_list:
-            return
-        astr = apply_name(app) + '_' + str(len(my_list.keys()))
-        if len(astr) > max_label_size:
-            astr = astr[:max_label_size - 3] + '...'
-        my_list[app] = astr
-
-        use_color = None
-        for opName, color in iteritems(colorCodes):
-            if opName in app.op.__class__.__name__:
-                use_color = color
-
-        if use_color is None:
-            g.add_node(pd.Node(astr, shape='box'))
-        elif high_contrast:
-            g.add_node(pd.Node(astr, style='filled', fillcolor=use_color,
-                               shape='box'))
-        else:
-            g.add_node(pd.Nonde(astr, color=use_color, shape='box'))
-
-        for i, nd in enumerate(app.inputs):
-            if nd not in my_list:
-                varastr = var_name(nd) + '_' + str(len(my_list.keys()))
-                if len(varastr) > max_label_size:
-                    varastr = varastr[:max_label_size - 3] + '...'
-                my_list[nd] = varastr
-                if nd.owner is not None:
-                    g.add_node(pd.Node(varastr))
-                elif high_contrast:
-                    g.add_node(pd.Node(varastr, style='filled',
-                                       fillcolor='green'))
-                else:
-                    g.add_node(pd.Node(varastr, color='green'))
-            else:
-                varastr = my_list[nd]
-            label = None
-            if len(app.inputs) > 1:
-                label = str(i)
-            g.add_edge(pd.Edge(varastr, astr, label=label))
-
-        for i, nd in enumerate(app.outputs):
-            if nd not in my_list:
-                varastr = var_name(nd) + '_' + str(len(my_list.keys()))
-                if len(varastr) > max_label_size:
-                    varastr = varastr[:max_label_size - 3] + '...'
-                my_list[nd] = varastr
-                color = None
-                if nd in vars:
-                    color = colorCodes['Output']
-                elif nd in orphanes:
-                    color = 'gray'
-                if color is None:
-                    g.add_node(pd.Node(varastr))
-                elif high_contrast:
-                    g.add_node(pd.Node(varastr, style='filled',
-                                       fillcolor=color))
-                else:
-                    g.add_node(pd.Node(varastr, color=color))
-            else:
-                varastr = my_list[nd]
-            label = None
-            if len(app.outputs) > 1:
-                label = str(i)
-            g.add_edge(pd.Edge(astr, varastr, label=label))
-        for nd in app.inputs:
-            if nd.owner:
-                plot_apply(nd.owner, d - 1)
-
-    for nd in vars:
-        if nd.owner:
-            for k in nd.owner.outputs:
-                if k not in vars:
-                    orphanes.append(k)
-
-    for nd in vars:
-        if nd.owner:
-            plot_apply(nd.owner, depth)
-    try:
-        g.write(outfile, prog='dot', format=format)
-    except pd.InvocationException as e:
-        # Some version of pydot are bugged/don't work correctly with
-        # empty label. Provide a better user error message.
-        version = getattr(pd, '__version__', "")
-        if version == "1.0.28" and "label=]" in e.message:
-            raise Exception("pydot 1.0.28 is know to be bugged. Use another "
-                            "working version of pydot")
-        elif "label=]" in e.message:
-            raise Exception("Your version of pydot " + version +
-                            " returned an error. Version 1.0.28 is known"
-                            " to be bugged and 1.0.25 to be working with"
-                            " Theano. Using another version of pydot could"
-                            " fix this problem. The pydot error is: " +
-                            e.message)
-        raise
-
-    print('The output file is available at', outfile)
-
-
 class _TagGenerator:
     """ Class for giving abbreviated tags like to objects.
         Only really intended for internal use in order to
@@ -1422,7 +1233,7 @@ def var_descriptor(obj, _prev_obs=None, _tag_generator=None):
         name = '<ndarray:'
         name += 'strides=[' + ','.join(str(stride)
                                        for stride in obj.strides) + ']'
-        name += ',digest=' + hashlib.md5(obj).hexdigest() + '>'
+        name += ',digest=' + hashlib.sha256(obj).hexdigest() + '>'
     elif hasattr(obj, 'owner') and obj.owner is not None:
         name = str(obj.owner.op) + '('
         name += ','.join(var_descriptor(ipt,
@@ -1466,7 +1277,7 @@ def hex_digest(x):
     Returns a short, mostly hexadecimal hash of a numpy ndarray
     """
     assert isinstance(x, np.ndarray)
-    rval = hashlib.md5(x.tostring()).hexdigest()
+    rval = hashlib.sha256(x.tostring()).hexdigest()
     # hex digest must be annotated with strides to avoid collisions
     # because the buffer interface only exposes the raw data, not
     # any info about the semantics of how that data should be arranged

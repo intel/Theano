@@ -6,7 +6,9 @@ from theano import Op
 import theano.tensor as T
 from theano.gradient import DisconnectedType
 
-from theano.gpuarray import (basic_ops, GpuArrayType)
+from .basic_ops import (gpu_contiguous, as_gpuarray_variable,
+                        infer_context_name)
+from .type import GpuArrayType
 
 import theano.tensor.fft
 from .opt import register_opt, op_lifter, register_opt2
@@ -26,9 +28,9 @@ except ImportError:
 try:
     import skcuda
     from skcuda import fft
-    scikits_cuda_available = True
+    skcuda_available = True
 except (ImportError, Exception):
-    scikits_cuda_available = False
+    skcuda_available = False
 
 
 class CuRFFTOp(Op):
@@ -49,7 +51,7 @@ class CuRFFTOp(Op):
         # the shape given to the plan, so padding will have to be done in the op.
         # The effect of padding on gradients has yet to be investigated.
 
-        if not scikits_cuda_available:
+        if not skcuda_available:
             raise RuntimeError("skcuda is needed for CuFFTOp")
 
         if not pygpu_available:
@@ -58,9 +60,8 @@ class CuRFFTOp(Op):
         if not pycuda_available:
             raise RuntimeError("pycuda is needed for CuFFTOp")
 
-        inp = basic_ops.gpu_contiguous(
-            basic_ops.as_gpuarray_variable(inp,
-                                           basic_ops.infer_context_name(inp)))
+        inp = gpu_contiguous(as_gpuarray_variable(inp,
+                                                  infer_context_name(inp)))
 
         # If no shape is provided as input, default to input data shape.
         if s is None:
@@ -69,11 +70,11 @@ class CuRFFTOp(Op):
 
         assert inp.dtype == "float32"
         assert s.ndim == 1
-        assert 'int' in s.dtype
+        assert s.dtype in theano.tensor.integer_dtypes
 
         return theano.Apply(self, [inp, s], [self.output_type(inp)()])
 
-    def make_thunk(self, node, storage_map, _, _2):
+    def make_thunk(self, node, storage_map, _, _2, impl=None):
 
         inputs = [storage_map[v] for v in node.inputs]
         outputs = [storage_map[v] for v in node.outputs]
@@ -174,7 +175,7 @@ class CuIRFFTOp(Op):
         # the shape given to the plan, so padding will have to be done in the op.
         # The effect of padding on gradients has yet to be investigated.
 
-        if not scikits_cuda_available:
+        if not skcuda_available:
             raise RuntimeError("skcuda is needed for CuIFFTOp")
 
         if not pygpu_available:
@@ -183,9 +184,8 @@ class CuIRFFTOp(Op):
         if not pycuda_available:
             raise RuntimeError("pycuda is needed for CuIFFTOp")
 
-        inp = basic_ops.gpu_contiguous(
-            basic_ops.as_gpuarray_variable(inp,
-                                           basic_ops.infer_context_name(inp)))
+        inp = gpu_contiguous(as_gpuarray_variable(inp,
+                                                  infer_context_name(inp)))
 
         # If no shape is provided as input, calculate shape assuming even real transform.
         if s is None:
@@ -198,7 +198,7 @@ class CuIRFFTOp(Op):
 
         return theano.Apply(self, [inp, s], [self.output_type(inp)()])
 
-    def make_thunk(self, node, storage_map, _, _2):
+    def make_thunk(self, node, storage_map, _, _2, impl=None):
 
         inputs = [storage_map[v] for v in node.inputs]
         outputs = [storage_map[v] for v in node.outputs]
@@ -370,7 +370,7 @@ def _unitary(norm):
                          "'no norm'" % norm)
     return norm
 
-if scikits_cuda_available:
+if skcuda_available:
     @register_opt('fast_compile')
     @op_lifter([theano.tensor.fft.RFFTOp])
     @register_opt2([theano.tensor.fft.RFFTOp], 'fast_compile')

@@ -9,4 +9,7 @@ global-include *.pkl
 recursive-include doc
 include bin/theano-cache
 include bin/theano-nose
-include bin/theano-test
+prune .jenkins
+prune .travis
+include versioneer.py
+include theano/_version.py

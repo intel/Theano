@@ -2,36 +2,87 @@ from __future__ import absolute_import, print_function, division
 from unittest import TestCase
 from nose.plugins.skip import SkipTest
 import itertools
-
-import numpy
+import numpy as np
 
 import theano
+from theano import config
 from theano import tensor
 from theano.tests import unittest_tools as utt
-from theano.tensor.blas import gemv_inplace, gemm_inplace, _dot22, batched_dot
+from theano.tensor.blas import gemv, gemv_inplace, gemm_inplace, _dot22, batched_dot
 from theano.tensor.tests.test_blas import TestGer, BaseGemv
 
 from .. import gpuarray_shared_constructor
-from .config import mode_with_gpu
+from .config import mode_with_gpu, test_ctx_name
 from .test_basic_ops import makeTester, rand
-
 from ..blas import (gpugemv_inplace, gpugemv_no_inplace,
-                    gpugemm_inplace, gpugemmbatch_no_inplace,
+                    gpugemm_inplace, gpugemm_no_inplace,
+                    gpugemmbatch_inplace,
                     gpuger_inplace, gpuger_no_inplace,
-                    GpuGer, gpu_dot22, GpuGemm)
+                    GpuGer, GpuGemm, gpu_dot22)
 
 
 GpuGemvTester = makeTester(
     'GpuGemvTester',
     op=gemv_inplace, gpu_op=gpugemv_inplace,
-    cases=dict(dot_vv=[rand(1), 1, rand(1, 2), rand(2), 0],
-               dot_vm=[rand(3), 1, rand(3, 2), rand(2), 0],
+    # It doesn't support float16
+    cases=dict(dot_vv=[rand(1), 1., rand(1, 2), rand(2), 0.],
+               dot_vm=[rand(3), 1., rand(3, 2), rand(2), 0.],
+               float32=[rand(3).astype('float32'), np.float32(1),
+                        rand(3, 2).astype('float32'),
+                        rand(2).astype('float32'), np.float32(0)],
+               float64=[rand(3).astype('float64'), np.float64(1),
+                        rand(3, 2).astype('float64'),
+                        rand(2).astype('float64'), np.float64(0)],
                # test_02=[rand(0), 1, rand(0, 2), rand(2), 0],
                # test_30=[rand(3), 1, rand(3, 0), rand(0), 0],
                # test_00=[rand(0), 1, rand(0, 0), rand(0), 0],
-               test_stride=[rand(3)[::-1], 1, rand(3, 2)[::-1], rand(2)[::-1], 0],
+               test_stride=[rand(3)[::-1], 1., rand(3, 2)[::-1], rand(2)[::-1], 0.],
                )
     )
+
+
+def test_float16():
+    # gemv (gemm called)
+    float16_data = [rand(3).astype('float16'),
+                    np.asarray(1, dtype=np.float32),
+                    rand(3, 3).astype('float16'),
+                    rand(3).astype('float16'),
+                    np.asarray(0.5, dtype=np.float32)]
+    float16_shared = [gpuarray_shared_constructor(val, target=test_ctx_name)
+                      for val in float16_data]
+    o = gemv(*float16_shared)
+    f = theano.function([], o, mode=mode_with_gpu)
+    y, alpha, A, x, beta = float16_data
+    out = f()
+    utt.assert_allclose(np.asarray(out), alpha * np.dot(A, x) + beta * y)
+    topo = f.maker.fgraph.toposort()
+    assert any([isinstance(n.op, GpuGemm) for n in topo])
+
+    # gemm
+    float16_data = [rand(3, 3).astype('float16'),
+                    np.asarray(1, dtype=np.float32),
+                    rand(3, 3).astype('float16'),
+                    rand(3, 3).astype('float16'),
+                    np.asarray(0.5, dtype=np.float32)]
+    float16_shared = [gpuarray_shared_constructor(val, target=test_ctx_name)
+                      for val in float16_data]
+    o = gpugemm_no_inplace(*float16_shared)
+    f = theano.function([], o)
+    y, alpha, A, x, beta = float16_data
+    out = f()
+    utt.assert_allclose(np.asarray(out), alpha * np.dot(A, x) + beta * y)
+
+    # dot22
+    float16_data = [rand(3, 3).astype('float16'),
+                    rand(3, 3).astype('float16')]
+
+    float16_shared = [gpuarray_shared_constructor(val)
+                      for val in float16_data]
+    o = gpu_dot22(*float16_shared)
+    f = theano.function([], o)
+    x, y = float16_data
+    out = f()
+    utt.assert_allclose(np.asarray(out), np.dot(x, y))
 
 
 class TestGpuSgemv(TestCase, BaseGemv, utt.TestOptimizationMixin):
@@ -52,6 +103,7 @@ class TestGpuSgemv(TestCase, BaseGemv, utt.TestOptimizationMixin):
 GpuGemmTester = makeTester(
     'GpuGemmTester',
     op=gemm_inplace, gpu_op=gpugemm_inplace,
+    # float16 tested in test_float16
     cases=dict(test1=[rand(3, 4), 1.0, rand(3, 5), rand(5, 4), 0.0],
                test2=[rand(3, 4), 1.0, rand(3, 5), rand(5, 4), 1.0],
                test3=[rand(3, 4), 1.0, rand(3, 5), rand(5, 4), -1.0],
@@ -60,7 +112,12 @@ GpuGemmTester = makeTester(
                test6=[rand(3, 4), 0.0, rand(3, 5), rand(5, 4), -1.0],
                test7=[rand(3, 4), -1.0, rand(3, 5), rand(5, 4), 0.0],
                test8=[rand(3, 4), -1.0, rand(3, 5), rand(5, 4), 1.1],
-               test9=[rand(3, 4), -1.0, rand(3, 5), rand(5, 4), -1.1],
+               float32=[rand(3, 4).astype('float32'), np.float32(-1.0),
+                        rand(3, 5).astype('float32'),
+                        rand(5, 4).astype('float32'), np.float32(-1.1)],
+               float64=[rand(3, 4).astype('float64'), np.float64(-1.0),
+                        rand(3, 5).astype('float64'),
+                        rand(5, 4).astype('float64'), np.float64(-1.1)],
                # test10=[rand(0, 4), -1.0, rand(0, 5), rand(5, 4), 0.0],
                # test11=[rand(3, 0), -1.0, rand(3, 5), rand(5, 0), 1.1],
                # test12=[rand(3, 4), -1.0, rand(3, 0), rand(0, 4), -1.1],
@@ -69,14 +126,47 @@ GpuGemmTester = makeTester(
     )
 
 
+gemm_batched_tests = dict(
+    ("test_b%im%ik%in%i" % (b, m, k, n),
+     [rand(b, m, n), rand(), rand(b, m, k), rand(b, k, n), rand()])
+    for b, m, k, n in itertools.combinations([2, 3, 5, 7, 11, 13], 4))
+
+gemm_batched_tests['float16'] = [rand(3, 4, 7).astype('float16'),
+                                 rand().astype('float16'),
+                                 rand(3, 4, 4).astype('float16'),
+                                 rand(3, 4, 7).astype('float16'),
+                                 rand().astype('float16')]
+gemm_batched_tests['float32'] = [rand(3, 4, 7).astype('float32'),
+                                 rand().astype('float32'),
+                                 rand(3, 4, 4).astype('float32'),
+                                 rand(3, 4, 7).astype('float32'),
+                                 rand().astype('float32')]
+gemm_batched_tests['float64'] = [rand(3, 4, 7).astype('float64'),
+                                 rand().astype('float64'),
+                                 rand(3, 4, 4).astype('float64'),
+                                 rand(3, 4, 7).astype('float64'),
+                                 rand().astype('float64')]
+
+
 GpuGemmBatchTester = makeTester(
     'GpuGemmBatchTester',
     op=lambda z, alpha, x, y, beta: alpha * batched_dot(x, y) + beta * z,
-    gpu_op=gpugemmbatch_no_inplace,
-    cases=dict(
-        ("test_b%im%ik%in%i" % (b, m, k, n),
-         [rand(b, m, n), rand(), rand(b, m, k), rand(b, k, n), rand()])
-        for b, m, k, n in itertools.combinations([2, 3, 5, 7, 11, 13], 4)))
+    gpu_op=gpugemmbatch_inplace,
+    cases=gemm_batched_tests
+    )
+
+
+class TestGpuGemmBatchStrided(TestCase):
+    def test0(self):
+        # Reported in https://github.com/Theano/Theano/issues/5730
+        x = tensor.tensor3()
+        y = tensor.tensor3()
+        z = tensor.batched_dot(x, y[:, 0, :, np.newaxis])
+        f = theano.function([x, y], z, mode=mode_with_gpu)
+        x_num = np.arange(32 * 19 * 600, dtype=config.floatX).reshape((32, 19, 600))
+        y_num = np.arange(7 * 32 * 600, dtype=config.floatX).reshape((32, 7, 600))
+        f(x_num, y_num)
+        assert f.maker.fgraph.toposort()[-2].op.inplace
 
 
 class TestGpuSger(TestGer):
@@ -132,50 +222,26 @@ GpuDot22Tester = makeTester(
 )
 
 
-def test_hgemm_swap():
-    from theano.sandbox.cuda import nvcc_compiler
-    if nvcc_compiler.nvcc_version < '7.5':
-        raise SkipTest("SgemmEx is only avaialble on cuda 7.5+")
+def test_gemv_zeros():
+    W = tensor.matrix()
+    v = tensor.vector()
+    f = theano.function([W, v], W.dot(v), mode=mode_with_gpu)
 
-    v = tensor.vector(dtype='float16')
-    m = tensor.matrix(dtype='float16')
-    m2 = tensor.matrix(dtype='float16')
-    m32 = tensor.matrix(dtype='float32')
-
-    # test that we don't try to replace anything but matrix x matrix in float16
-    f = theano.function([v, m], tensor.dot(v, m), mode=mode_with_gpu)
-    assert len([node for node in f.maker.fgraph.apply_nodes
-                if isinstance(node.op, GpuGemm)]) == 0
-
-    f = theano.function([m32, m], tensor.dot(m32, m), mode=mode_with_gpu)
-    assert len([node for node in f.maker.fgraph.apply_nodes
-                if isinstance(node.op, GpuGemm)]) == 0
-
-    f = theano.function([m, m2], tensor.dot(m, m2), mode=mode_with_gpu)
-    assert len([node for node in f.maker.fgraph.apply_nodes
-                if isinstance(node.op, GpuGemm)]) == 1
-
-    v1 = numpy.random.random((3, 4)).astype('float16')
-    v2 = numpy.random.random((4, 2)).astype('float16')
-
-    of = f(v1, v2)
-    on = numpy.dot(v1, v2)
-
-    utt.assert_allclose(of, on)
+    # Apply to an empty matrix shape (5,0) and an empty vector shape (0,)
+    dim = 1000
+    A = np.zeros((dim, 0), dtype=theano.config.floatX)
+    b = np.zeros((0,), dtype=theano.config.floatX)
+    tmp = f(A, b)
+    assert np.allclose(tmp,
+                       np.zeros((dim,)))
 
 
-def test_hgemm_alpha_output_merge():
-    from theano.sandbox.cuda import nvcc_compiler
-    if nvcc_compiler.nvcc_version < '7.5':
-        raise SkipTest("SgemmEx is only avaialble on cuda 7.5+")
-
-    m1 = tensor.matrix(dtype='float16')
-    m2 = tensor.matrix(dtype='float16')
-
-    b = tensor.matrix(dtype='float16')
-
-    hgemm = numpy.asarray(0.05, dtype='float16') * (tensor.dot(m1, m2) + b)
-
-    f = theano.function([m1, m2, b], hgemm, mode=mode_with_gpu)
-    # there should be 3 gpu_from_host, 1 hgemm and 1 host_from_gpu
-    assert len(f.maker.fgraph.apply_nodes) == 5
+def test_gemv_dot_strides():
+    # Reported in https://github.com/Theano/Theano/issues/6142
+    xv = rand(5)
+    yv = rand(5, 1)
+    x = gpuarray_shared_constructor(xv)
+    y = gpuarray_shared_constructor(yv, broadcastable=(False, True))
+    f = theano.function([], tensor.dot(x, y[::-1]), mode=mode_with_gpu)
+    out = f()
+    utt.assert_allclose(out, np.dot(xv, yv[::-1]))

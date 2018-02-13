@@ -38,6 +38,8 @@ class TestD3Viz(unittest.TestCase):
         self.check(f)
 
     def test_mlp_profiled(self):
+        if th.config.mode in ("DebugMode", "DEBUG_MODE"):
+            raise SkipTest("Can't profile in DebugMode")
         m = models.Mlp()
         profile = th.compile.profiling.ProfileStats(False)
         f = th.function(m.inputs, m.outputs, profile=profile)
@@ -52,5 +54,10 @@ class TestD3Viz(unittest.TestCase):
 
     def test_ofg_nested(self):
         m = models.OfgNested()
+        f = th.function(m.inputs, m.outputs)
+        self.check(f)
+
+    def test_ofg_simple(self):
+        m = models.OfgSimple()
         f = th.function(m.inputs, m.outputs)
         self.check(f)

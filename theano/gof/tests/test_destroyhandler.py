@@ -11,6 +11,9 @@ from theano.gof.opt import (OpKeyOptimizer, PatternSub, NavigatorOptimizer,
 from theano.gof import destroyhandler
 from theano.gof.fg import FunctionGraph, InconsistencyError
 from theano.gof.toolbox import ReplaceValidate
+from theano.tests.unittest_tools import assertFailure_fast
+
+from theano import change_flags
 
 from copy import copy
 
@@ -90,6 +93,10 @@ add_in_place_2 = MyOp(2, 'AddInPlace', dmap={0: [0]},
 add_in_place_3 = MyOp(2, 'AddInPlace', dmap={0: [0]},
                       destroyhandler_tolerate_aliased=[(0, 1)])
 dot = MyOp(2, 'Dot')
+multiple = MyOp(2, 'Multiple', nout=2)
+multiple_in_place_0 = MyOp(2, 'MultipleInPlace0', nout=2, dmap={0: [0]})
+multiple_in_place_1 = MyOp(2, 'MultipleInPlace1', nout=2, dmap={1: [1]})
+multiple_in_place_0_1 = MyOp(2, 'MultipleInPlace01', nout=2, dmap={0: [0], 1: [1]})
 
 
 def inputs():
@@ -163,6 +170,7 @@ def test_misc():
 ######################
 
 
+@assertFailure_fast
 def test_aliased_inputs_replacement():
     x, y, z = inputs()
     tv = transpose_view(x)
@@ -194,6 +202,7 @@ def test_indestructible():
     consistent(g)
 
 
+@assertFailure_fast
 def test_usage_loop_through_views_2():
     x, y, z = inputs()
     e0 = transpose_view(transpose_view(sigmoid(x)))
@@ -204,6 +213,7 @@ def test_usage_loop_through_views_2():
     inconsistent(g)  # we cut off the path to the sigmoid
 
 
+@assertFailure_fast
 def test_destroyers_loop():
     # AddInPlace(x, y) and AddInPlace(y, x) should not coexist
     x, y, z = inputs()
@@ -253,6 +263,7 @@ def test_aliased_inputs2():
     inconsistent(g)
 
 
+@assertFailure_fast
 def test_aliased_inputs_tolerate():
     x, y, z = inputs()
     e = add_in_place_2(x, x)
@@ -267,6 +278,7 @@ def test_aliased_inputs_tolerate2():
     inconsistent(g)
 
 
+@assertFailure_fast
 def test_same_aliased_inputs_ignored():
     x, y, z = inputs()
     e = add_in_place_3(x, x)
@@ -274,6 +286,7 @@ def test_same_aliased_inputs_ignored():
     consistent(g)
 
 
+@assertFailure_fast
 def test_different_aliased_inputs_ignored():
     x, y, z = inputs()
     e = add_in_place_3(x, transpose_view(x))
@@ -308,6 +321,7 @@ def test_indirect():
     inconsistent(g)
 
 
+@assertFailure_fast
 def test_indirect_2():
     x, y, z = inputs()
     e0 = transpose_view(x)
@@ -319,6 +333,7 @@ def test_indirect_2():
     consistent(g)
 
 
+@assertFailure_fast
 def test_long_destroyers_loop():
     x, y, z = inputs()
     e = dot(dot(add_in_place(x, y),
@@ -360,6 +375,7 @@ def test_multi_destroyers():
         pass
 
 
+@assertFailure_fast
 def test_multi_destroyers_through_views():
     x, y, z = inputs()
     e = dot(add(transpose_view(z), y), add(z, x))
@@ -402,6 +418,7 @@ def test_usage_loop_through_views():
     consistent(g)
 
 
+@assertFailure_fast
 def test_usage_loop_insert_views():
     x, y, z = inputs()
     e = dot(add_in_place(x, add(y, z)),
@@ -425,6 +442,7 @@ def test_value_repl():
     consistent(g)
 
 
+@change_flags(compute_test_value='off')
 def test_value_repl_2():
     x, y, z = inputs()
     sy = sigmoid(y)
@@ -433,3 +451,44 @@ def test_value_repl_2():
     consistent(g)
     g.replace(sy, transpose_view(MyConstant("abc")))
     consistent(g)
+
+
+@assertFailure_fast
+def test_multiple_inplace():
+    # this tests issue #5223
+    # there were some problems with Ops that have more than
+    # one in-place input.
+    x, y, z = inputs()
+    # we will try to replace this op with an in-place version
+    m = multiple(x, y)
+    # this makes it impossible to run in-place on x
+    e_1 = dot(m[0], x)
+    # try to confuse the DestroyHandler: this dot Op can run
+    # before multiple and then multiple can still run in-place on y
+    e_2 = dot(y, y)
+    g = Env([x, y], [e_1, e_2], False)
+    consistent(g)
+
+    # try to work in-place on x/0 and y/1 (this should fail)
+    fail = FailureWatch()
+    OpSubOptimizer(multiple, multiple_in_place_0_1, fail).optimize(g)
+    consistent(g)
+    assert fail.failures == 1
+
+    # try to work in-place on x/0 (this should fail)
+    fail = FailureWatch()
+    OpSubOptimizer(multiple, multiple_in_place_0, fail).optimize(g)
+    consistent(g)
+    assert fail.failures == 1
+
+    # try to work in-place on y/1 (this should succeed)
+    fail = FailureWatch()
+    OpSubOptimizer(multiple, multiple_in_place_1, fail).optimize(g)
+    consistent(g)
+    assert fail.failures == 0
+
+    # try to work in-place on x/0 and y/1 (this should still fail)
+    fail = FailureWatch()
+    OpSubOptimizer(multiple_in_place_1, multiple_in_place_0_1, fail).optimize(g)
+    consistent(g)
+    assert fail.failures == 1

@@ -220,6 +220,36 @@ The ``compute_test_value`` mechanism works as follows:
   This feature is currently incompatible with ``Scan`` and also with ops
   which do not implement a ``perform`` method.
 
+It is also possible to override variables ``__repr__`` method to have them return tag.test_value.
+
+.. testsetup:: printtestvalue
+
+   import theano
+   import theano.tensor as T
+
+               
+.. testcode:: printtestvalue
+
+   x = T.scalar('x')
+   # Assigning test value
+   x.tag.test_value = 42
+
+   # Enable test value printing
+   theano.config.print_test_value = True
+   print(x.__repr__())
+
+   # Disable test value printing
+   theano.config.print_test_value = False
+   print(x.__repr__())
+
+Running the code above returns the following output:
+
+.. testoutput:: printtestvalue
+
+   x
+   array(42.0)
+   x
+
 
 "How do I Print an Intermediate Value in a Function?"
 -----------------------------------------------------
@@ -249,7 +279,7 @@ Theano provides a 'Print' op to do this.
     this is a very important value __str__ = [ 1.  2.  3.]
 
 Since Theano runs your program in a topological order, you won't have precise
-control over the order in which multiple ``Print()`` ops are evaluted.  For a more
+control over the order in which multiple ``Print()`` ops are evaluated.  For a more
 precise inspection of what's being computed where, when, and how, see the discussion
 :ref:`faq_monitormode`.
 
@@ -284,7 +314,7 @@ First, make sure you're running in ``FAST_RUN`` mode. Even though
 to ``theano.function`` (or ``theano.make``) or by setting :attr:`config.mode`
 to ``FAST_RUN``.
 
-Second, try the Theano :ref:`using_profilemode`.  This will tell you which
+Second, try the Theano :ref:`profiling <tut_profiling>`.  This will tell you which
 ``Apply`` nodes, and which ops are eating up your CPU cycles.
 
 Tips:
@@ -407,7 +437,7 @@ optimizations. The first is a speed optimization that merges elemwise
 operations together. This makes it harder to know which particular
 elemwise causes the problem. The second optimization makes some ops'
 outputs overwrite their inputs. So, if an op creates a bad output, you
-will not be able to see the input that was overwriten in the ``post_func``
+will not be able to see the input that was overwritten in the ``post_func``
 function. To disable those optimizations (with a Theano version after
 0.6rc3), define the MonitorMode like this:
 
@@ -573,4 +603,11 @@ the Ops from Theano and Pylearn2.
 Then send us filename.
 
 
-.. autoclass:: theano.tests.breakpoint.PdbBreakpoint
+Breakpoint during Theano function execution
+-------------------------------------------
+
+You can set a breakpoint during the execution of a Theano function with
+:class:`PdbBreakpoint <theano.tests.breakpoint.PdbBreakpoint>`.
+:class:`PdbBreakpoint <theano.tests.breakpoint.PdbBreakpoint>` automatically
+detects available debuggers and uses the first available in the following order:
+`pudb`, `ipdb`, or `pdb`.

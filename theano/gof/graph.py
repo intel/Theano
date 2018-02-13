@@ -4,8 +4,11 @@ Node classes (`Apply`, `Variable`) and expression graph algorithms.
 from __future__ import absolute_import, print_function, division
 
 from collections import deque
+import contextlib
 from copy import copy
 from itertools import count
+
+import warnings
 
 import theano
 from theano import config
@@ -125,9 +128,10 @@ class Apply(Node):
         Returns the params for the node, or NoParams if no params is set.
 
         """
-        if hasattr(self.op, 'get_params'):
+        try:
             return self.op.get_params(self)
-        return NoParams
+        except theano.gof.utils.MethodNotDefined:
+            return NoParams
 
     def __getstate__(self):
         d = self.__dict__
@@ -215,7 +219,7 @@ class Apply(Node):
         strict : bool
             If True, the type fields of all the inputs must be equal
             to the current ones (or compatible, for instance Tensor /
-            CudaNdarray of the same dtype and broadcastable patterns,
+            GpuArray of the same dtype and broadcastable patterns,
             in which case they will be converted into current Type), and
             returned outputs are guaranteed to have the same types as
             self.outputs.  If False, then there's no guarantee that the
@@ -307,7 +311,7 @@ class Variable(Node):
     - `SparseVariable` subclass of Variable that represents
       a scipy.sparse.{csc,csr}_matrix object.
 
-    - `CudaNdarrayVariable` subclass of Variable that represents our object on
+    - `GpuArrayVariable` subclass of Variable that represents our object on
       the GPU that is a subset of numpy.ndarray.
 
     - `RandomVariable`.
@@ -359,7 +363,7 @@ class Variable(Node):
         theano.function([d,b], [e])     # this works.  d's default value of 1.5 is ignored.
 
     The python variables :literal:`a,b,c` all refer to instances of type
-    `Variable`. The `Variable` refered to by `a` is also an instance of
+    `Variable`. The `Variable` referred to by `a` is also an instance of
     `Constant`.
 
     `compile.function` uses each `Apply` instance's `inputs` attribute together
@@ -386,6 +390,8 @@ class Variable(Node):
             raise TypeError("name must be a string", name)
         self.name = name
         self.auto_name = 'auto_' + str(next(self.__count__))
+
+        Variable.notify_construction_observers(self)
 
     def __str__(self):
         """Return a str representation of the Variable.
@@ -481,12 +487,12 @@ class Variable(Node):
         Examples
         --------
 
-        >>> import numpy
+        >>> import numpy as np
         >>> import theano.tensor as T
         >>> x = T.dscalar('x')
         >>> y = T.dscalar('y')
         >>> z = x + y
-        >>> numpy.allclose(z.eval({x : 16.3, y : 12.1}), 28.4)
+        >>> np.allclose(z.eval({x : 16.3, y : 12.1}), 28.4)
         True
 
         We passed :func:`eval` a dictionary mapping symbolic theano
@@ -523,7 +529,31 @@ class Variable(Node):
     def __getstate__(self):
         d = self.__dict__.copy()
         d.pop("_fn_cache", None)
+        if (not config.pickle_test_value) \
+                and (hasattr(self.tag, 'test_value')):
+            if not type(config).pickle_test_value.is_default:
+                warnings.warn("pickle_test_value is not defaut value (True).\n"
+                              "Test value of variable %s(%s) will not be dumped." % (d['auto_name'], d['name']))
+            t = copy(d["tag"])
+            del t.test_value
+            d["tag"] = t
         return d
+
+    #  refer to doc in nodes_constructed.
+    construction_observers = []
+
+    @classmethod
+    def append_construction_observer(cls, observer):
+        cls.construction_observers.append(observer)
+
+    @classmethod
+    def remove_construction_observer(cls, observer):
+        cls.construction_observers.remove(observer)
+
+    @classmethod
+    def notify_construction_observers(cls, instance):
+        for observer in cls.construction_observers:
+            observer(instance)
 
 
 class Constant(Variable):
@@ -547,6 +577,7 @@ class Constant(Variable):
     def __init__(self, type, data, name=None):
         Variable.__init__(self, type, None, None, name)
         self.data = type.filter(data)
+        utils.add_tag_trace(self)
 
     def equals(self, other):
         # this does what __eq__ should do, but Variable and Apply should always be hashable by id
@@ -607,6 +638,8 @@ def stack_search(start, expand, mode='bfs', build_inv=False):
     expand : callable
         When we get to a node, add expand(node) to the list of nodes to visit.
         This function should return a list, or None.
+    mode : string
+        'bfs' or 'dfs' for breath first search or depth first search.
 
     Returns
     -------
@@ -631,7 +664,7 @@ def stack_search(start, expand, mode='bfs', build_inv=False):
         start_pop = start.popleft
     else:
         start_pop = start.pop
-    expand_inv = {}
+    expand_inv = {}  # var: clients
     while start:
         l = start_pop()
         if id(l) not in rval_set:
@@ -795,9 +828,8 @@ def orphans(i, o):
     return variables_and_orphans(i, o)[1]
 
 
-def clone(i, o, copy_inputs=True):
-    """
-    Copies the subgraph contained between i and o.
+def clone(i, o, copy_inputs=True, copy_orphans=None):
+    """Copies the subgraph contained between i and o.
 
     Parameters
     ----------
@@ -807,18 +839,32 @@ def clone(i, o, copy_inputs=True):
         Output Variables.
     copy_inputs : bool
         If True, the inputs will be copied (defaults to True).
+    copy_orphans:
+        When None, use the copy_inputs value,
+        When True, new orphans nodes are created.
+        When False, original orphans nodes are reused in the new graph.
 
     Returns
     -------
     object
         The inputs and outputs of that copy.
 
+    Note
+    ----
+
+    A constant, if in the ``i`` list is not an orpha. So it will be
+    copied depending of the ``copy_inputs`` parameter. Otherwise it
+    will be copied depending of the ``copy_orphans`` parameter.
+
     """
-    equiv = clone_get_equiv(i, o, copy_inputs)
+    if copy_orphans is None:
+        copy_orphans = copy_inputs
+    equiv = clone_get_equiv(i, o, copy_inputs, copy_orphans)
     return [equiv[input] for input in i], [equiv[output] for output in o]
 
 
-def clone_get_equiv(inputs, outputs, copy_inputs_and_orphans=True, memo=None):
+def clone_get_equiv(inputs, outputs, copy_inputs=True, copy_orphans=True,
+                    memo=None):
     """
     Return a dictionary that maps from Variable and Apply nodes in the
     original graph to a new node (a clone) in a new graph.
@@ -830,11 +876,14 @@ def clone_get_equiv(inputs, outputs, copy_inputs_and_orphans=True, memo=None):
     ----------
     inputs : a list of Variables
     outputs : a list of Variables
-    copy_inputs_and_orphans : bool
-        True means to create the cloned graph from new input and constant
+    copy_inputs : bool
+        True means to create the cloned graph from new input
         nodes (the bottom of a feed-upward graph).
         False means to clone a graph that is rooted at the original input
         nodes.
+    copy_orphans:
+        When True, new constant nodes are created. When False, original
+        constant nodes are reused in the new graph.
     memo : None or dict
         Optionally start with a partly-filled dictionary for the return value.
         If a dictionary is passed, this function will work in-place on that
@@ -846,7 +895,7 @@ def clone_get_equiv(inputs, outputs, copy_inputs_and_orphans=True, memo=None):
 
     # clone the inputs if necessary
     for input in inputs:
-        if copy_inputs_and_orphans:
+        if copy_inputs:
             cpy = input.clone()
             cpy.owner = None
             cpy.index = None
@@ -858,7 +907,7 @@ def clone_get_equiv(inputs, outputs, copy_inputs_and_orphans=True, memo=None):
     for apply in io_toposort(inputs, outputs):
         for input in apply.inputs:
             if input not in memo:
-                if copy_inputs_and_orphans:
+                if copy_orphans:
                     cpy = input.clone()
                     memo[input] = cpy
                 else:
@@ -877,7 +926,7 @@ def clone_get_equiv(inputs, outputs, copy_inputs_and_orphans=True, memo=None):
     return memo
 
 
-def general_toposort(r_out, deps, debug_print=False,
+def general_toposort(outputs, deps, debug_print=False,
                      compute_deps_cache=None, deps_cache=None,
                      clients=None):
     """
@@ -931,9 +980,9 @@ def general_toposort(r_out, deps, debug_print=False,
                 return deps_cache[io]
     assert deps_cache is not None
 
-    assert isinstance(r_out, (tuple, list, deque))
+    assert isinstance(outputs, (tuple, list, deque))
 
-    reachable, _clients = stack_search(deque(r_out), compute_deps_cache,
+    reachable, _clients = stack_search(deque(outputs), compute_deps_cache,
                                        'dfs', True)
     if clients is not None:
         clients.update(_clients)
@@ -947,9 +996,9 @@ def general_toposort(r_out, deps, debug_print=False,
             rlist.append(node)
             rset.add(node)
             for client in _clients.get(node, []):
-                deps_cache[client] = [a for a in deps_cache[client]
-                                      if a is not node]
-                if not deps_cache[client]:
+                d = [a for a in deps_cache[client] if a is not node]
+                deps_cache[client] = d
+                if not d:
                     sources.append(client)
 
     if len(rlist) != len(reachable):
@@ -979,17 +1028,37 @@ def io_toposort(inputs, outputs, orderings=None, clients=None):
         node->clients for each node in the subgraph that is sorted
 
     """
-    # the inputs are used only here in the function that decides what 'predecessors' to explore
-    iset = set(inputs)
+    if not orderings and clients is None:  # ordering can be None or empty dict
+        # Specialized function that is faster when more then ~10 nodes
+        # when no ordering.
 
-    # We build 2 functions as a speed up
-    deps_cache = {}
+        # Do a new stack implementation with the vm algo.
+        # This will change the order returned.
+        computed = set(inputs)
+        todo = [o.owner for o in reversed(outputs) if o.owner]
+        order = []
+        while todo:
+            cur = todo.pop()
+            # We suppose that all outputs are always computed
+            if cur.outputs[0] in computed:
+                continue
+            if all([i in computed or i.owner is None for i in cur.inputs]):
+                computed.update(cur.outputs)
+                order.append(cur)
+            else:
+                todo.append(cur)
+                todo.extend(i.owner for i in cur.inputs if i.owner)
+        return order
 
     compute_deps = None
     compute_deps_cache = None
-    if not orderings:  # can be None or empty dict
+    iset = set(inputs)
+    deps_cache = {}
+
+    if not orderings:  # ordering can be None or empty dict
         # Specialized function that is faster when no ordering.
         # Also include the cache in the function itself for speed up.
+
         def compute_deps_cache(obj):
             if obj in deps_cache:
                 return deps_cache[obj]
@@ -1012,6 +1081,9 @@ def io_toposort(inputs, outputs, orderings=None, clients=None):
                 deps_cache[obj] = rval
             return rval
     else:
+
+        # the inputs are used only here in the function that decides what
+        # 'predecessors' to explore
         def compute_deps(obj):
             rval = []
             if obj not in iset:
@@ -1022,7 +1094,7 @@ def io_toposort(inputs, outputs, orderings=None, clients=None):
                     rval = list(obj.inputs)
                 rval.extend(orderings.get(obj, []))
             else:
-                assert not orderings.get(obj, [])
+                assert not orderings.get(obj, None)
             return rval
 
     topo = general_toposort(outputs, deps=compute_deps,
@@ -1098,7 +1170,10 @@ def io_connection_pattern(inputs, outputs):
     # connnection patterns of the individual outputs
     global_connection_pattern = [[] for o in range(len(inputs))]
     for out in outputs:
-        out_connection_pattern = connect_pattern_by_var[out]
+        out_connection_pattern = connect_pattern_by_var.get(out)
+        if out_connection_pattern is None:
+            # the output is completely isolated from inputs
+            out_connection_pattern = [False] * len(inputs)
         for i in range(len(inputs)):
             global_connection_pattern[i].append(out_connection_pattern[i])
 
@@ -1346,3 +1421,62 @@ def list_of_nodes(inputs, outputs):
         lambda o: [inp.owner for inp in o.inputs
                    if inp.owner and
                    not any(i in inp.owner.outputs for i in inputs)])
+
+
+def is_in_ancestors(l_node, f_node):
+    r"""
+    Goes up in the graph and returns True if the apply node f_node is found.
+
+    Use a stack implementation as the vm algo.
+    We suppose all nodes are not lazy
+    (i.e. for IfElse we suppose all inputs are computed)
+    """
+    computed = set()
+    todo = [l_node]
+    while todo:
+        cur = todo.pop()
+        if cur.outputs[0] in computed:
+            continue
+        if all([i in computed or i.owner is None for i in cur.inputs]):
+            computed.update(cur.outputs)
+            if cur is f_node:
+                return True
+        else:
+            todo.append(cur)
+            todo.extend(i.owner for i in cur.inputs if i.owner)
+    return False
+
+
+@contextlib.contextmanager
+def nodes_constructed():
+    """
+    A contextmanager that is used in inherit_stack_trace and keeps track
+    of all the newly created varaible nodes inside an optimization. A list
+    of new_nodes is instantiated but will be filled in a lazy manner (when
+    Variable.notify_construction_observers is called).
+
+
+    `observer` is the entity that updates the new_nodes list.
+    construction_observers is a list inside Variable class and contains
+    a list of observer functions. The observer functions inside
+    construction_observers are only called when a variable node is
+    instantiated (where Variable.notify_construction_observers is called).
+    When the observer function is called, a new variable node is added to
+    the new_nodes list.
+
+
+    Parameters
+    ----------
+    new_nodes
+        A list of all the variable nodes that are created inside the optimization.
+
+    yields
+        new_nodes list.
+    """
+    new_nodes = []
+
+    def observer(node):
+        new_nodes.append(node)
+    Variable.append_construction_observer(observer)
+    yield new_nodes
+    Variable.remove_construction_observer(observer)

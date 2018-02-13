@@ -7,7 +7,6 @@ types that it can raise.
 from __future__ import absolute_import, print_function, division
 from collections import OrderedDict
 import time
-import traceback
 
 import theano
 from theano.gof import graph
@@ -17,8 +16,8 @@ from theano import config
 
 from six import iteritems, itervalues
 from six.moves import StringIO
+from theano.gof.utils import get_variable_trace_string
 from theano.misc.ordered_set import OrderedSet
-
 NullType = None
 
 
@@ -52,13 +51,9 @@ class MissingInputError(Exception):
         if kwargs:
             # The call to list is needed for Python 3
             assert list(kwargs.keys()) == ["variable"]
-            tr = getattr(list(kwargs.values())[0].tag, 'trace', [])
-            if type(tr) is list and len(tr) > 0:
-                sio = StringIO()
-                print("\nBacktrace when the variable is created:", file=sio)
-                for subtr in list(kwargs.values())[0].tag.trace:
-                    traceback.print_list(subtr, sio)
-                args = args + (str(sio.getvalue()),)
+            error_msg = get_variable_trace_string(kwargs["variable"])
+            if error_msg:
+                args = args + (error_msg,)
         s = '\n'.join(args)  # Needed to have the new line print correctly
         Exception.__init__(self, s)
 
@@ -74,7 +69,7 @@ class FunctionGraph(utils.object2):
     variable in the subgraph by another, e.g. replace (x + x).out by (2
     * x).out. This is the basis for optimization in theano.
 
-    This class is also reponsible for verifying that a graph is valid
+    This class is also responsible for verifying that a graph is valid
     (ie, all the dtypes and broadcast patterns are compatible with the
     way the the Variables are used) and for annotating the Variables with
     a .clients field that specifies which Apply nodes use the variable.
@@ -133,7 +128,7 @@ class FunctionGraph(utils.object2):
         clone : boolean
             If true, we will clone the graph. This is useful to remove the
             constant cache problem.
-        update_mapping : dictionnary
+        update_mapping : dictionary
             Mapping between the inputs with updates and the outputs
             corresponding to their updates.
         """
@@ -279,15 +274,16 @@ class FunctionGraph(utils.object2):
         r.clients.append(new_client)
 
     def __remove_client__(self, r, client_to_remove,
-                          prune=True, reason=None):
+                          reason=None):
         """
         Removes all from the clients list of r.
 
         This is the main method to remove variable or apply node from
         an FunctionGraph.
 
-        If called with an empty list of clients and prune=True, this
-        will remove the owner of the variable (so an apply_node).
+        Remove r from this fgraph if it don't have clients left. If it
+        have an owner and all the outputs of the owner have no
+        clients, it will be removed.
 
         Parameters
         ----------
@@ -295,68 +291,46 @@ class FunctionGraph(utils.object2):
             The clients of r will be removed.
         client_to_remove : (op, i) pair
             (op, i) pair such that node.inputs[i] is not r anymore.
-        prune : bool
-            If prune is True, it remove r from this fgraph if it don't
-            have clients left.
-
-        Returns
-        -------
-        bool
-            True if r is still in the fgraph and need to be pruned
-            later. This can happen only when prune is False. A second
-            call to this method with an empty list for
-            clients_to_remove and prune=True will remove r.
 
         """
-        if client_to_remove:
+        l = [(r, client_to_remove)]
+        while l:
+            r, client_to_remove = l.pop()
             r.clients.remove(client_to_remove)
             # entry should be uniq in r. No need to assert it as it is
             # already asserted in __add_client__.
             # assert entry not in r.clients
-        if r.clients:
-            return False
-        if not prune:
-            return True
-        variable = r
-        if variable.owner:
-            apply_node = variable.owner
-            used_or_output = [output for output in apply_node.outputs
-                              if output.clients or output in self.outputs]
-            # If the apply node is not used and is not an output
-            if not used_or_output:
-                if not hasattr(apply_node.tag, 'removed_by'):
-                    apply_node.tag.removed_by = []
-                apply_node.tag.removed_by.append(str(reason))
-                self.apply_nodes.remove(apply_node)
-                self.variables.difference_update(apply_node.outputs)
-                self.execute_callbacks('on_prune', apply_node, reason)
+            if r.clients:
+                continue
 
-                for i, input in enumerate(apply_node.inputs):
-                    self.__remove_client__(input, (apply_node, i),
-                                           reason=reason)
-        # variable should not have any clients.
-        # assert not variable.clients
-
-        # variable should be in self.variables
-        # Why this assert fail? Making it True could cause opt speed up
-        # I think this is caused as we remove var in self.variables in
-        # another place.
-        # assert variable in self.variables
-
-        if variable in self.variables:
-            # If the owner have other outputs still used,
-            # then we must keep that variable in the graph.
-            if not variable.owner or not any(
-                [var for var in variable.owner.outputs
-                 if var.clients]):
-
+            # r have no more clients, so check if we need to remove it
+            # and its parent.
+            variable = r
+            if not variable.owner:
+                # A Constant or input without client. Remove it.
                 self.variables.remove(variable)
                 # This allow to quickly know if a var is still in the fgraph
                 # or not.
                 del variable.fgraph
-        return False
+            else:
+                apply_node = variable.owner
+                used = [output for output in apply_node.outputs
+                        if output.clients]
+                # If the apply node is not used and is not an output
+                if not used:
+                    if not hasattr(apply_node.tag, 'removed_by'):
+                        apply_node.tag.removed_by = []
+                    apply_node.tag.removed_by.append(str(reason))
+                    self.apply_nodes.remove(apply_node)
+                    # del apply_node.fgraph
+                    self.variables.difference_update(apply_node.outputs)
+                    # for var in apply_node.outputs:
+                    #     del var.fgraph
+                    self.execute_callbacks('on_prune', apply_node, reason)
 
-    # import #
+                    for i, input in enumerate(apply_node.inputs):
+                        l.append((input, (apply_node, i)))
+
     def __import_r__(self, variable, reason):
         """
         Import variables to this FunctionGraph and also their apply_node,
@@ -408,13 +382,13 @@ class FunctionGraph(utils.object2):
                             not isinstance(r, graph.Constant) and
                             r not in self.inputs):
                         # Standard error message
-                        raise MissingInputError((
-                            "An input of the graph, used to compute %s, "
-                            "was not provided and not given a value."
-                            "Use the Theano flag exception_verbosity='high',"
-                            "for more information on this error."
-                            % str(node)),
-                            variable=r)
+                        error_msg = ("Input %d of the graph (indices start "
+                                     "from 0), used to compute %s, was not "
+                                     "provided and not given a value. Use the "
+                                     "Theano flag exception_verbosity='high', "
+                                     "for more information on this error."
+                                     % (node.inputs.index(r), str(node)))
+                        raise MissingInputError(error_msg, variable=r)
 
         for node in new_nodes:
             assert node not in self.apply_nodes
@@ -470,14 +444,12 @@ class FunctionGraph(utils.object2):
 
         self.__import_r__(new_r, reason=reason)
         self.__add_client__(new_r, (node, i))
-        prune = self.__remove_client__(r, (node, i), False)
+        self.__remove_client__(r, (node, i), reason=reason)
         # Precondition: the substitution is semantically valid
         # However it may introduce cycles to the graph,  in which case the
         # transaction will be reverted later.
         self.execute_callbacks('on_change_input', node, i,
                                r, new_r, reason=reason)
-        if prune:
-            self.__remove_client__(r, None, True, reason=reason)
 
     # replace #
     def replace(self, r, new_r, reason=None, verbose=None):
@@ -497,10 +469,21 @@ class FunctionGraph(utils.object2):
             new_r2 = r.type.convert_variable(new_r)
             # We still make sure that the type converts correctly
             if new_r2 is None or new_r2.type != r.type:
-                raise TypeError("The type of the replacement must be "
-                                "compatible with the type of the original "
-                                "Variable.", r, new_r, r.type, new_r.type,
-                                str(reason))
+                done = dict()
+                used_ids = dict()
+                old = theano.compile.debugmode.debugprint(
+                    r, prefix='  ', depth=6,
+                    file=StringIO(), done=done,
+                    print_type=True,
+                    used_ids=used_ids).getvalue()
+                new = theano.compile.debugmode.debugprint(
+                    new_r, prefix='  ', depth=6,
+                    file=StringIO(), done=done,
+                    print_type=True,
+                    used_ids=used_ids).getvalue()
+                raise toolbox.BadOptimization(
+                    r, new_r, None, None, str(reason) +
+                    ". The type of the replacement must be the same.", old, new)
             new_r = new_r2
         if r not in self.variables:
             # this variable isn't in the graph... don't raise an
@@ -671,8 +654,9 @@ class FunctionGraph(utils.object2):
         take care of computing dependencies by itself.
 
         """
-        ords = OrderedDict()
         assert isinstance(self._features, list)
+        all_orderings = []
+
         for feature in self._features:
             if hasattr(feature, 'orderings'):
                 orderings = feature.orderings(self)
@@ -681,17 +665,24 @@ class FunctionGraph(utils.object2):
                                     str(feature.orderings) +
                                     ". Nondeterministic object is " +
                                     str(orderings))
+                if len(orderings) > 0:
+                    all_orderings.append(orderings)
+                    for node, prereqs in iteritems(orderings):
+                        if not isinstance(prereqs, (list, OrderedSet)):
+                            raise TypeError(
+                                "prereqs must be a type with a "
+                                "deterministic iteration order, or toposort "
+                                " will be non-deterministic.")
+        if len(all_orderings) == 1:
+            # If there is only 1 ordering, we reuse it directly.
+            return all_orderings[0].copy()
+        else:
+            # If there is more than 1 ordering, combine them.
+            ords = OrderedDict()
+            for orderings in all_orderings:
                 for node, prereqs in iteritems(orderings):
-                    if not isinstance(prereqs, (list, OrderedSet)):
-                        raise TypeError(
-                            "prereqs must be a type with a "
-                            "deterministic iteration order, or toposort "
-                            " will be non-deterministic.")
                     ords.setdefault(node, []).extend(prereqs)
-        # eliminate duplicate prereqs
-        for (node, prereqs) in iteritems(ords):
-            ords[node] = list(OrderedSet(prereqs))
-        return ords
+            return ords
 
     def check_integrity(self):
         """

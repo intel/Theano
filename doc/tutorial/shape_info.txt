@@ -53,9 +53,9 @@ can lead to errors. Consider this example:
 >>> theano.printing.debugprint(f) # doctest: +NORMALIZE_WHITESPACE
 MakeVector{dtype='int64'} [id A] ''   4
  |Elemwise{Add}[(0, 0)] [id B] ''   3
- | |Shape_i{0} [id C] ''   1
+ | |Shape_i{0} [id C] ''   2
  | | |x [id D]
- | |Shape_i{0} [id E] ''   2
+ | |Shape_i{0} [id E] ''   1
  |   |y [id F]
  |Shape_i{1} [id G] ''   0
    |x [id D]
@@ -96,8 +96,8 @@ optimization, nor most other optimizations) or ``DebugMode`` (it will test
 before and after all optimizations (much slower)).
 
 
-Specifing Exact Shape
-=====================
+Specifying Exact Shape
+======================
 
 Currently, specifying a shape is not as easy and flexible as we wish and we plan some
 upgrade.  Here is the current state of what can be done:

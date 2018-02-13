@@ -5,7 +5,7 @@ import time
 import unittest
 
 from nose.plugins.skip import SkipTest
-import numpy
+import numpy as np
 from six import itervalues
 
 from theano import function
@@ -20,9 +20,8 @@ import theano
 
 
 class TestCallbacks(unittest.TestCase):
-    """
-    Test the VM_Linker's callback argument, which can be useful for debugging.
-    """
+    # Test the VM_Linker's callback argument, which can be useful for debugging.
+
     def setUp(self):
         self.n_callbacks = {}
 
@@ -92,7 +91,7 @@ def test_speed():
     def time_numpy():
         steps_a = 5
         steps_b = 100
-        x = numpy.asarray([2.0, 3.0], dtype=theano.config.floatX)
+        x = np.asarray([2.0, 3.0], dtype=theano.config.floatX)
 
         numpy_version(x, steps_a)
         t0 = time.time()
@@ -195,7 +194,6 @@ def test_speed_lazy():
 
 
 def test_partial_function():
-    import numpy as np
     from theano.tests import unittest_tools as utt
 
     def check_partial_function(linker_name):
@@ -209,6 +207,8 @@ def test_partial_function():
         utt.assert_allclose(f(5), np.array([32., 16., 1.7857142857142858]))
 
     check_partial_function(vm.VM_Linker(allow_partial_eval=True, use_cloop=False))
+    if not theano.config.cxx:
+        raise SkipTest("Need cxx for this test")
     check_partial_function('cvm')
 
 
@@ -223,6 +223,8 @@ def test_partial_function_with_output_keys():
         assert f(5, output_subset=['a'])['a'] == f(5)['a']
 
     check_partial_function_output_keys(vm.VM_Linker(allow_partial_eval=True, use_cloop=False))
+    if not theano.config.cxx:
+        raise SkipTest("Need cxx for this test")
     check_partial_function_output_keys('cvm')
 
 
@@ -230,7 +232,7 @@ def test_partial_function_with_updates():
 
     def check_updates(linker_name):
         x = tensor.lscalar('input')
-        y = theano.shared(numpy.asarray(1, 'int64'), name='global')
+        y = theano.shared(np.asarray(1, 'int64'), name='global')
         f = theano.function([x], [x, x + 34], updates=[(y, x + 1)], mode=Mode(
             optimizer=None, linker=linker_name))
         g = theano.function([x], [x - 6], updates=[(y, y + 3)], mode=Mode(
@@ -243,6 +245,8 @@ def test_partial_function_with_updates():
         assert y.get_value() == 10
 
     check_updates(vm.VM_Linker(allow_partial_eval=True, use_cloop=False))
+    if not theano.config.cxx:
+        raise SkipTest("Need cxx for this test")
     check_updates('cvm')
 
 
@@ -278,21 +282,6 @@ if run_memory_usage_tests:
     # these are not normal unit tests, do not run them as part of standard
     # suite.  I ran them while looking at top, and stopped when memory usage
     # was stable.
-    def test_leak2():
-        import theano.sandbox.cuda as cuda
-        for i in xrange(1000000):
-            n = numpy.asarray([2.3, 4.5], dtype='f')
-            c = sys.getrefcount(n)
-            a = cuda.CudaNdarray(n)
-            a.sum()
-            assert c == sys.getrefcount(n)
-            del a
-            if not i % 1000:
-                print('.', end=' ')
-                print(gc.collect(), end=' ')
-                print(gc.collect())
-            sys.stdout.flush()
-
     def test_no_leak_many_graphs():
         # Verify no memory leaks when creating and deleting a lot of functions
 
@@ -336,7 +325,7 @@ if run_memory_usage_tests:
             f_a = function([x], a,
                            mode=Mode(optimizer=None,
                                      linker=linker()))
-            inp = numpy.random.rand(1000000)
+            inp = np.random.rand(1000000)
             for i in xrange(100):
                 f_a(inp)
             if 0:  # this doesn't seem to work, prints 0 for everything
@@ -373,7 +362,7 @@ if run_memory_usage_tests:
             f_a = function([x], a,
                            mode=Mode(optimizer=None,
                                      linker=linker()))
-            inp = numpy.random.rand(1000000)
+            inp = np.random.rand(1000000)
             for i in xrange(500):
                 f_a(inp)
         print(1)
@@ -401,12 +390,11 @@ class RunOnce(theano.Op):
 
 
 def test_vm_gc():
-    """This already caused a bug in the trunk of Theano.
+    # This already caused a bug in the trunk of Theano.
+    #
+    # The bug was introduced in the trunk on July 5th, 2012 and fixed on
+    # July 30th.
 
-    The bug was introduced in the trunk on July 5th, 2012 and fixed on
-    July 30th.
-
-    """
     x = theano.tensor.vector()
     p = RunOnce()(x)
     mode = theano.Mode(linker=theano.gof.vm.VM_Linker(lazy=True))
@@ -452,3 +440,20 @@ def test_reallocation():
         assert check_storage(storage_map)[0]
         assert len(set(id(v) for v in
                        itervalues(storage_map))) < len(storage_map)
+
+
+def test_no_recycling():
+    if theano.config.cxx == '':
+        raise SkipTest('need c++')
+    x = theano.tensor.vector()
+    for lnk in [vm.VM_Linker(use_cloop=True),
+                vm.VM_Linker(use_cloop=False, lazy=True),
+                vm.VM_Linker(use_cloop=False, lazy=False, allow_gc=True),
+                vm.VM_Linker(use_cloop=False, lazy=False, allow_gc=False)]:
+
+        mode = theano.Mode(optimizer='fast_compile', linker=lnk)
+        f = theano.function([x], x + 1, mode=mode)
+        f2 = theano.function([x], (x + 1) * 2, mode=mode)
+        m1 = f.fn.thunks[0].thunk.module
+        m2 = f2.fn.thunks[0].thunk.module
+        assert m1 is m2

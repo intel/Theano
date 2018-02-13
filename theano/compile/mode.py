@@ -4,13 +4,14 @@ WRITEME
 """
 from __future__ import absolute_import, print_function, division
 import logging
+import warnings
 
 import theano
 from theano import gof
 import theano.gof.vm
-from theano.configparser import config
-from theano.compile.ops import _output_guard
+from theano import config
 from six import string_types
+from theano.compile.function_module import Supervisor
 
 
 _logger = logging.getLogger('theano.compile.mode')
@@ -65,13 +66,26 @@ OPT_FAST_RUN_STABLE.name = 'OPT_FAST_RUN_STABLE'
 OPT_FAST_COMPILE.name = 'OPT_FAST_COMPILE'
 OPT_STABILIZE.name = 'OPT_STABILIZE'
 
+OPT_O2 = OPT_FAST_COMPILE.including('fusion')
+OPT_O3 = OPT_FAST_RUN.excluding('inplace')
+OPT_UNSAFE = OPT_O3.including('unsafe')
+
+OPT_O2.name = 'OPT_O2'
+OPT_O3.name = 'OPT_O3'
+OPT_UNSAFE.name = 'OPT_UNSAFE'
+
 predefined_optimizers = {
     None: OPT_NONE,
     'None': OPT_NONE,
     'merge': OPT_MERGE,
+    'o4': OPT_FAST_RUN,
+    'o3': OPT_O3,
+    'o2': OPT_O2,
+    'o1': OPT_FAST_COMPILE,
+    'unsafe': OPT_UNSAFE,
+    'fast_compile': OPT_FAST_COMPILE,
     'fast_run': OPT_FAST_RUN,
     'fast_run_stable': OPT_FAST_RUN_STABLE,
-    'fast_compile': OPT_FAST_COMPILE,
     'stabilize': OPT_STABILIZE}
 
 
@@ -98,18 +112,16 @@ class AddDestroyHandler(gof.Optimizer):
 
     """
     def apply(self, fgraph):
-        for o in fgraph.outputs:
-            try:
-                fgraph.replace_validate(o, _output_guard(o),
-                                        reason='output_guard')
-                _logger.info("Output variable %s required output_guard, "
-                             "how was this output left unprotected against "
-                             "destructive operations?"
-                             % o)
-            except gof.InconsistencyError:
-                # This output is already impossible to destroy.
-                # No guard necessary
-                pass
+        supervisor_added = False
+        for feature in fgraph._features:
+            if isinstance(feature, Supervisor):
+                supervisor_added = True
+                break
+        if not supervisor_added:
+            warnings.warn("WARNING: Supervisor is not added. Please build a FunctionGraph"
+                          "via theano.compile.function_module.std_graph()"
+                          "or add the Supervisor class manually.",
+                          stacklevel=3)
 
     def add_requirements(self, fgraph):
         super(AddDestroyHandler, self).add_requirements(fgraph)
@@ -214,6 +226,16 @@ optdb.register('add_destroy_handler', AddDestroyHandler(),
 optdb.register('merge3', gof.MergeOptimizer(),
                100, 'fast_run', 'merge')
 
+if theano.config.check_stack_trace in ['raise', 'warn', 'log']:
+    _tags = ('fast_run', 'fast_compile')
+
+if theano.config.check_stack_trace == 'off':
+    _tags = ()
+
+optdb.register('CheckStackTrace',
+               gof.CheckStackTraceOptimization(), -1, *_tags)
+del _tags
+
 
 class Mode(object):
     """
@@ -269,7 +291,6 @@ class Mode(object):
         self._optimizer = optimizer
         self.call_time = 0
         self.fn_time = 0
-        linker.mode = self  # TODO: WHY IS THIS HERE?
 
     def __str__(self):
         return "%s(linker = %s, optimizer = %s)" % (self.__class__.__name__,
@@ -296,7 +317,7 @@ class Mode(object):
                                               self.provided_optimizer)
         # N.B. opt might be a Query instance, not sure what else it might be...
         #     string? Optimizer? OptDB? who knows???
-        return self.clone(optimizer=opt.including(*tags))
+        return self.clone(optimizer=opt.including(*tags), linker=link)
 
     def register(self, *optimizations):
         """Adds new optimization instances to a mode.
@@ -326,12 +347,12 @@ class Mode(object):
     def excluding(self, *tags):
         link, opt = self.get_linker_optimizer(self.provided_linker,
                                               self.provided_optimizer)
-        return self.clone(optimizer=opt.excluding(*tags))
+        return self.clone(optimizer=opt.excluding(*tags), linker=link)
 
     def requiring(self, *tags):
         link, opt = self.get_linker_optimizer(self.provided_linker,
                                               self.provided_optimizer)
-        return self.clone(optimizer=opt.requiring(*tags))
+        return self.clone(optimizer=opt.requiring(*tags), linker=link)
 
     def clone(self, link_kwargs=None, optimizer="", **kwargs):
         """
@@ -391,7 +412,7 @@ def get_mode(orig_string):
                 default_mode_class):
             return instantiated_default_mode
 
-    if string in ['Mode', 'ProfileMode', 'DebugMode', 'NanGuardMode']:
+    if string in ['Mode', 'DebugMode', 'NanGuardMode']:
         if string == 'DebugMode':
             # need to import later to break circular dependency.
             from .debugmode import DebugMode
@@ -403,9 +424,6 @@ def get_mode(orig_string):
             # NanGuardMode use its own linker.
             ret = NanGuardMode(True, True, True, optimizer=config.optimizer)
         else:
-            # This might be required if the string is 'ProfileMode'
-            from .profilemode import ProfileMode  # noqa
-            from .profilemode import prof_mode_instance_to_print
             # TODO: Can't we look up the name and invoke it rather than using eval here?
             ret = eval(string +
                        '(linker=config.linker, optimizer=config.optimizer)')
@@ -423,11 +441,6 @@ def get_mode(orig_string):
         if theano.config.optimizer_requiring:
             ret = ret.requiring(*theano.config.optimizer_requiring.split(':'))
         instantiated_default_mode = ret
-
-    # must tell python to print the summary at the end.
-    if string == 'ProfileMode':
-        # need to import later to break circular dependency.
-        prof_mode_instance_to_print.append(ret)
 
     return ret
 

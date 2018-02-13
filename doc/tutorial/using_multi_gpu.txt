@@ -36,7 +36,7 @@ The mapping from context names to devices is done through the
     dev0->cuda0;dev1->cuda1
 
 Let's break it down.  First there is a list of mappings.  Each of
-these mappings is separeted by a semicolon ';'.  There can be any
+these mappings is separated by a semicolon ';'.  There can be any
 number of such mappings, but in the example above we have two of them:
 `dev0->cuda0` and `dev1->cuda1`.
 
@@ -64,8 +64,8 @@ defined.  This will look like this:
 .. code-block:: bash
 
    $ THEANO_FLAGS="contexts=dev0->cuda0;dev1->cuda1" python -c 'import theano'
-   Mapped name dev0 to device cuda0: GeForce GTX TITAN X
-   Mapped name dev1 to device cuda1: GeForce GTX TITAN X
+   Mapped name dev0 to device cuda0: GeForce GTX TITAN X (0000:09:00.0)
+   Mapped name dev1 to device cuda1: GeForce GTX TITAN X (0000:06:00.0)
 
 
 If you don't have enough GPUs for a certain model, you can assign the

@@ -1,16 +1,17 @@
 from __future__ import absolute_import, print_function, division
-from nose.plugins.skip import SkipTest
+import sys
 import unittest
 
-import numpy
+from nose.plugins.skip import SkipTest
+import numpy as np
+from six import reraise
 
 from theano import config
 from theano import gof
 import theano
-import theano.tensor
 from theano.compat import exc_message
 from theano.compile import debugmode
-import theano.compile
+import theano.tensor
 from theano.tests import unittest_tools as utt
 
 
@@ -242,10 +243,8 @@ def test_badoptimization():
 
 
 def test_badoptimization_opt_err():
-    """This variant of test_badoptimization() replace the working code
-    with a new apply node that will raise an error.
-
-    """
+    # This variant of test_badoptimization() replace the working code
+    # with a new apply node that will raise an error.
     @gof.local_optimizer([theano.tensor.add])
     def insert_bigger_b_add(node):
         if node.op == theano.tensor.add:
@@ -255,23 +254,55 @@ def test_badoptimization_opt_err():
                                                         inputs[-1]))
                 return [node.op(*inputs)]
         return False
+
+    @gof.local_optimizer([theano.tensor.add])
+    def insert_bad_dtype(node):
+        if node.op == theano.tensor.add:
+            inputs = list(node.inputs)
+            if inputs[-1].owner is None:
+
+                return [node.outputs[0].astype('float32')]
+        return False
     edb = gof.EquilibriumDB()
     edb.register('insert_bigger_b_add', insert_bigger_b_add, 'all')
     opt = edb.query('+all')
+    edb2 = gof.EquilibriumDB()
+    edb2.register('insert_bad_dtype', insert_bad_dtype, 'all')
+    opt2 = edb2.query('+all')
 
     a = theano.tensor.dvector()
     b = theano.tensor.dvector()
 
     f = theano.function([a, b], a + b,
                         mode=debugmode.DebugMode(optimizer=opt))
-
     try:
         f([1.0, 2.0, 3.0], [2, 3, 4],)
-    except Exception as e:
+    except ValueError as e:
         assert 'insert_bigger_b_add' in exc_message(e)
-        return  # TEST PASS
+    else:
+        assert False
 
-    assert False
+    # Test that opt that do an illegal change still get the error from gof.
+    try:
+        with theano.change_flags(on_opt_error='raise'):
+            f2 = theano.function([a, b], a + b,
+                                 mode=debugmode.DebugMode(optimizer=opt2,
+                                                          stability_patience=1))
+        f2([1.0, 2.0, 3.0], [2, 3, 4],)
+    except theano.gof.toolbox.BadOptimization as e:
+        assert 'insert_bad_dtype' in str(e)
+        # Test that we can reraise the error with an extended message
+        try:
+            new_e = e.__class__("TTT" + str(e))
+            exc_type, exc_value, exc_trace = sys.exc_info()
+            exc_value = new_e
+            reraise(e.__class__, exc_value, exc_trace)
+        except theano.gof.toolbox.BadOptimization as e:
+            pass
+        else:
+            assert False
+    else:
+        assert False
 
 
 def test_stochasticoptimization():
@@ -316,7 +347,7 @@ def test_just_c_code():
     x = theano.tensor.dvector()
     f = theano.function([x], wb2(x),
                         mode=debugmode.DebugMode(check_py_code=False))
-    assert numpy.all(f([1, 2]) == [2, 4])
+    assert np.all(f([1, 2]) == [2, 4])
 
 
 def test_baddestroymap():
@@ -349,7 +380,7 @@ def test_baddestroymap_c():
     f = theano.function([x], wb2i(x),
                         mode=debugmode.DebugMode(check_py_code=False))
     try:
-        assert numpy.all(f([1, 2]) == [2, 4])
+        assert np.all(f([1, 2]) == [2, 4])
         assert False  # failed to raise error
     except debugmode.BadDestroyMap:
         pass
@@ -445,8 +476,8 @@ class Test_ViewMap(unittest.TestCase):
 
         r0, r1 = f([1, 2, 3, 4], [5, 6, 7, 8])
 
-        assert numpy.all(r0 == [1, 2, 3, 4])
-        assert numpy.all(r1 == [2, 3, 4])
+        assert np.all(r0 == [1, 2, 3, 4])
+        assert np.all(r1 == [2, 3, 4])
 
     def test_aliased_outputs_ok_output(self):
         # here aliased outputs is ok because they are both outputs of the
@@ -470,8 +501,8 @@ class Test_ViewMap(unittest.TestCase):
 
         r0, r1 = f([1, 2, 3, 4], [5, 6, 7, 8])
 
-        assert numpy.all(r0 == [2, 4, 6, 8])
-        assert numpy.all(r1 == [4, 6, 8])
+        assert np.all(r0 == [2, 4, 6, 8])
+        assert np.all(r1 == [4, 6, 8])
 
     def test_aliased_outputs_ok_shadow(self):
         # here the alias between outputs is ok because one of them is not used
@@ -496,7 +527,7 @@ class Test_ViewMap(unittest.TestCase):
 
         r0 = f([1, 2, 3, 4], [5, 6, 7, 8])
 
-        assert numpy.all(r0 == [2, 4, 6, 8])
+        assert np.all(r0 == [2, 4, 6, 8])
 
     def test_aliased_outputs_bad(self):
         # here the alias between outputs is not ok because destroying one
@@ -555,31 +586,31 @@ class Test_check_isfinite(unittest.TestCase):
         g = theano.function([x], theano.tensor.log(x), mode='DEBUG_MODE')
 
         # this should work
-        f(numpy.log([3, 4, 5]).astype(config.floatX))
+        f(np.log([3, 4, 5]).astype(config.floatX))
 
         # if TensorType.filter_checks_isfinite were true, these would raise
         # ValueError
         # if not, DebugMode will check internally, and raise InvalidValueError
         # passing an invalid value as an input should trigger ValueError
         self.assertRaises(debugmode.InvalidValueError, f,
-                          numpy.log([3, -4, 5]).astype(config.floatX))
+                          np.log([3, -4, 5]).astype(config.floatX))
         self.assertRaises(debugmode.InvalidValueError, f,
-                          (numpy.asarray([0, 1.0, 0]) / 0).astype(config.floatX))
+                          (np.asarray([0, 1.0, 0]) / 0).astype(config.floatX))
         self.assertRaises(debugmode.InvalidValueError, f,
-                          (numpy.asarray([1.0, 1.0, 1.0]) / 0).astype(config.floatX))
+                          (np.asarray([1.0, 1.0, 1.0]) / 0).astype(config.floatX))
 
         # generating an invalid value internally should trigger
         # InvalidValueError
         self.assertRaises(debugmode.InvalidValueError, g,
-                          numpy.asarray([3, -4, 5], dtype=config.floatX))
+                          np.asarray([3, -4, 5], dtype=config.floatX))
 
         # this should disable the exception
         theano.tensor.TensorType.filter_checks_isfinite = False
         theano.compile.mode.predefined_modes[
             'DEBUG_MODE'].check_isfinite = False
         # insert several Inf
-        f(numpy.asarray(numpy.asarray([1.0, 1.0, 1.0]) / 0,
-                        dtype=config.floatX))
+        f(np.asarray(np.asarray([1.0, 1.0, 1.0]) / 0,
+                     dtype=config.floatX))
 
     def test_check_isfinite_disabled(self):
         x = theano.tensor.dvector()
@@ -587,10 +618,10 @@ class Test_check_isfinite(unittest.TestCase):
                             mode=debugmode.DebugMode(check_isfinite=False))
 
         # nan should go through
-        f(numpy.log([3, -4, 5]))
+        f(np.log([3, -4, 5]))
 
         # inf should go through
-        infs = numpy.asarray([1.0, 1., 1.]) / 0
+        infs = np.asarray([1.0, 1., 1.]) / 0
         # print infs
         f(infs)
         return
@@ -713,7 +744,6 @@ class VecAsRowAndCol(gof.Op):
         if (c[0] is None) or (c[0].shape != (lv, 1)):
             c[0] = node.outputs[1].type.value_zeros((lv, 1))
 
-        # Python loop because CudaNdarrays do not support newaxis
         for i in range(lv):
             r[0][0, i] = v[i]
             c[0][i, 0] = v[i]
@@ -721,14 +751,14 @@ class VecAsRowAndCol(gof.Op):
 
 class Test_preallocated_output(unittest.TestCase):
     def setUp(self):
-        self.rng = numpy.random.RandomState(seed=utt.fetch_seed())
+        self.rng = np.random.RandomState(seed=utt.fetch_seed())
 
     def test_f_contiguous(self):
         a = theano.tensor.fmatrix('a')
         b = theano.tensor.fmatrix('b')
         z = BrokenCImplementationAdd()(a, b)
         # In this test, we do not want z to be an output of the graph.
-        out = theano.tensor.dot(z, numpy.eye(7))
+        out = theano.tensor.dot(z, np.eye(7))
 
         a_val = self.rng.randn(7, 7).astype('float32')
         b_val = self.rng.randn(7, 7).astype('float32')
@@ -793,25 +823,4 @@ class Test_preallocated_output(unittest.TestCase):
         f = theano.function([v], [c, r])
 
         v_val = self.rng.randn(5).astype('float32')
-        f(v_val)
-
-    def test_output_broadcast_cuda(self):
-        from theano.sandbox import cuda
-        if not cuda.cuda_available:
-            raise SkipTest("Optional package Cuda disabled")
-        if cuda.use.device_number is None:
-            # We should normally set VecAsRowAndCol as a GPUOp But we
-            # don't want to do this here as this will disable others
-            # tests in this file.  So we manually init the GPU if
-            # needed to remove warning.
-            cuda.use("gpu",
-                     force=True,
-                     default_to_move_computation_to_gpu=False,
-                     move_shared_float32_to_gpu=False,
-                     enable_cuda=False)
-        v = cuda.fvector('v')
-        c, r = VecAsRowAndCol()(v)
-        f = theano.function([v], [c, r])
-
-        v_val = cuda.CudaNdarray(self.rng.randn(5).astype('float32'))
         f(v_val)

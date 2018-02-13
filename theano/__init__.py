@@ -28,25 +28,65 @@ __docformat__ = "restructuredtext en"
 # Set a default logger. It is important to do this before importing some other
 # theano code, since this code may want to log some messages.
 import logging
-
+import os
 import sys
+import warnings
 
-if sys.platform == 'win32' and sys.version_info[0:2] == (3, 5):
-    raise RuntimeError(
-        "Theano do not support Python 3.5 on Windows. Use Python 2.7 or 3.4.")
+
+def has_handlers(logger):
+    # copied from Logger.hasHandlers() (introduced in Python 3.2)
+    _logger = logger
+    _has_handler = False
+    while _logger:
+        if _logger.handlers:
+            _has_handler = True
+            break
+        if not _logger.propagate:
+            break
+        else:
+            _logger = _logger.parent
+    return _has_handler
 
 theano_logger = logging.getLogger("theano")
 logging_default_handler = logging.StreamHandler()
 logging_default_formatter = logging.Formatter(
     fmt='%(levelname)s (%(name)s): %(message)s')
 logging_default_handler.setFormatter(logging_default_formatter)
-theano_logger.addHandler(logging_default_handler)
 theano_logger.setLevel(logging.WARNING)
+
+if has_handlers(theano_logger) is False:
+    theano_logger.addHandler(logging_default_handler)
+
+
+# Disable default log handler added to theano_logger when the module
+# is imported.
+def disable_log_handler(logger=theano_logger, handler=logging_default_handler):
+    if has_handlers(logger):
+        logger.removeHandler(handler)
 
 # Version information.
 from theano.version import version as __version__
 
+# Raise a meaning full warning/error if the theano directory is in the
+# Python path.
+from six import PY3
+rpath = os.path.realpath(__path__[0])
+for p in sys.path:
+    if os.path.realpath(p) != rpath:
+        continue
+    if PY3:
+        raise RuntimeError(
+            "You have the theano directory in your Python path."
+            " This do not work in Python 3.")
+    else:
+        warnings.warn(
+            "You have the theano directory in your Python path."
+            " This is will not work in Python 3.")
+    break
+
+
 from theano.configdefaults import config
+from theano.configparser import change_flags
 
 import os
 import re
@@ -147,15 +187,17 @@ from theano.compile import (
     SymbolicOutput, Out,
     Mode,
     predefined_modes, predefined_linkers, predefined_optimizers,
-    FunctionMaker, function, function_dump, OpFromGraph,
-    ProfileMode, ProfileStats,
+    FunctionMaker, function, function_dump,
+    OpFromGraph,
+    ProfileStats,
     Param, shared, as_op)
 
 from theano.misc.safe_asarray import _asarray
 
 from theano.printing import pprint, pp
 
-from theano.scan_module import scan, map, reduce, foldl, foldr, clone
+from theano.scan_module import (scan, map, reduce, foldl, foldr, clone,
+                                scan_checkpoints)
 
 from theano.updates import OrderedUpdates
 
@@ -181,17 +223,6 @@ else:
         raise ImportError("The nose module is not installed."
                           " It is needed for Theano tests.")
 
-if config.device.startswith('gpu') or config.init_gpu_device.startswith('gpu'):
-    import theano.sandbox.cuda
-    # We can't test the driver during import of theano.sandbox.cuda as
-    # this cause circular import dependency. So we also test it manually
-    # after the import
-    if theano.sandbox.cuda.cuda_available:
-        import theano.sandbox.cuda.tests.test_driver
-
-        if config.enable_initial_driver_test:
-            theano.sandbox.cuda.tests.test_driver.test_nvidia_driver1()
-
 if (config.device.startswith('cuda') or
         config.device.startswith('opencl') or
         config.init_gpu_device.startswith('cuda') or
@@ -208,7 +239,7 @@ if config.device.startswith('cpu'):
         pass
 
 # Use config.numpy to call numpy.seterr
-import numpy
+import numpy as np
 
 if config.numpy.seterr_all == 'None':
     _all = None
@@ -230,7 +261,7 @@ if config.numpy.seterr_invalid == 'None':
     _invalid = None
 else:
     _invalid = config.numpy.seterr_invalid
-numpy.seterr(
+np.seterr(
     all=_all,
     divide=_divide,
     over=_over,

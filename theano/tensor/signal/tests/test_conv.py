@@ -2,7 +2,7 @@ from __future__ import absolute_import, print_function, division
 import unittest
 
 from nose.plugins.skip import SkipTest
-import numpy
+import numpy as np
 
 import theano
 import theano.tensor as T
@@ -43,13 +43,13 @@ class TestSignalConv2D(unittest.TestCase):
         theano_conv = theano.function([input, filters], output)
 
         # initialize input and compute result
-        image_data = numpy.random.random(image_shape)
-        filter_data = numpy.random.random(filter_shape)
+        image_data = np.random.random(image_shape)
+        filter_data = np.random.random(filter_shape)
         theano_output = theano_conv(image_data, filter_data)
 
         # REFERENCE IMPLEMENTATION ############
-        out_shape2d = numpy.array(image_shape[-2:]) - numpy.array(filter_shape[-2:]) + 1
-        ref_output = numpy.zeros(tuple(out_shape2d))
+        out_shape2d = np.array(image_shape[-2:]) - np.array(filter_shape[-2:]) + 1
+        ref_output = np.zeros(tuple(out_shape2d))
 
         # reshape as 3D input tensors to make life easier
         image_data3d = image_data.reshape((bsize,) + image_shape[-2:])
@@ -66,7 +66,7 @@ class TestSignalConv2D(unittest.TestCase):
 
                 image2d = image_data3d[b, :, :]
                 filter2d = filter_data3d[k, :, :]
-                output2d = numpy.zeros(ref_output.shape)
+                output2d = np.zeros(ref_output.shape)
                 for row in range(ref_output.shape[0]):
                     for col in range(ref_output.shape[1]):
                         output2d[row, col] += (
@@ -83,12 +83,11 @@ class TestSignalConv2D(unittest.TestCase):
             utt.verify_grad(sym_conv2d, [image_data, filter_data])
 
     def test_basic(self):
-        """
-        Basic functionality of nnet.conv.ConvOp is already tested by
-        its own test suite.  We just have to test whether or not
-        signal.conv.conv2d can support inputs and filters of type
-        matrix or tensor3.
-        """
+        # Basic functionality of nnet.conv.ConvOp is already tested by
+        # its own test suite.  We just have to test whether or not
+        # signal.conv.conv2d can support inputs and filters of type
+        # matrix or tensor3.
+
         if(not theano.tensor.nnet.conv.imported_scipy_signal and
            theano.config.cxx == ""):
             raise SkipTest("conv2d tests need SciPy or a c++ compiler")
@@ -99,18 +98,16 @@ class TestSignalConv2D(unittest.TestCase):
         self.validate((7, 5), (2, 3), out_dim=2, verify_grad=False)
 
     def test_fail(self):
-        """
-        Test that conv2d fails for dimensions other than 2 or 3.
-        """
+        # Test that conv2d fails for dimensions other than 2 or 3.
+
         self.assertRaises(Exception, conv.conv2d, T.dtensor4(), T.dtensor3())
         self.assertRaises(Exception, conv.conv2d, T.dtensor3(), T.dvector())
 
     def test_bug_josh_reported(self):
-        """
-        Test refers to a bug reported by Josh, when due to a bad merge these
-        few lines of code failed. See
-        http://groups.google.com/group/theano-dev/browse_thread/thread/8856e7ca5035eecb
-        """
+        # Test refers to a bug reported by Josh, when due to a bad merge these
+        # few lines of code failed. See
+        # http://groups.google.com/group/theano-dev/browse_thread/thread/8856e7ca5035eecb
+
         m1 = theano.tensor.matrix()
         m2 = theano.tensor.matrix()
         conv.conv2d(m1, m2)

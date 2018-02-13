@@ -7,17 +7,16 @@ import theano.tensor as T
 from theano.tests import unittest_tools as utt
 
 import theano.gpuarray.fft
-import numpy.fft
 
 from .config import mode_with_gpu
 
 # Skip tests if pygpu is not available.
 from nose.plugins.skip import SkipTest
-from theano.gpuarray.fft import pygpu_available, scikits_cuda_available, pycuda_available
+from theano.gpuarray.fft import pygpu_available, skcuda_available, pycuda_available
 if not pygpu_available:  # noqa
     raise SkipTest('Optional package pygpu not available')
-if not scikits_cuda_available:  # noqa
-    raise SkipTest('Optional package scikits.cuda not available')
+if not skcuda_available:  # noqa
+    raise SkipTest('Optional package scikit-cuda not available')
 if not pycuda_available:  # noqa
     raise SkipTest('Optional package pycuda not available')
 
@@ -37,7 +36,7 @@ class TestFFT(unittest.TestCase):
         res_rfft_comp = (np.asarray(res_rfft[:, :, 0]) +
                          1j * np.asarray(res_rfft[:, :, 1]))
 
-        rfft_ref = numpy.fft.rfft(inputs_val, axis=1)
+        rfft_ref = np.fft.rfft(inputs_val, axis=1)
 
         utt.assert_allclose(rfft_ref, res_rfft_comp)
 
@@ -55,12 +54,12 @@ class TestFFT(unittest.TestCase):
         def f_rfft(inp):
             return theano.gpuarray.fft.curfft(inp)
         inputs_val = np.random.random((1, N)).astype('float32')
-        utt.verify_grad(f_rfft, [inputs_val], eps=eps)
+        utt.verify_grad(f_rfft, [inputs_val], eps=eps, mode=mode_with_gpu)
 
         def f_irfft(inp):
             return theano.gpuarray.fft.cuirfft(inp)
         inputs_val = np.random.random((1, N // 2 + 1, 2)).astype('float32')
-        utt.verify_grad(f_irfft, [inputs_val], eps=eps)
+        utt.verify_grad(f_irfft, [inputs_val], eps=eps, mode=mode_with_gpu)
 
     def test_rfft(self):
         inputs_val = np.random.random((1, N, N)).astype('float32')
@@ -72,7 +71,7 @@ class TestFFT(unittest.TestCase):
         res_rfft_comp = (np.asarray(res_rfft[:, :, :, 0]) +
                          1j * np.asarray(res_rfft[:, :, :, 1]))
 
-        rfft_ref = numpy.fft.rfftn(inputs_val, axes=(1, 2))
+        rfft_ref = np.fft.rfftn(inputs_val, axes=(1, 2))
 
         utt.assert_allclose(rfft_ref, res_rfft_comp, atol=1e-4, rtol=1e-4)
 
@@ -91,11 +90,11 @@ class TestFFT(unittest.TestCase):
 
         utt.assert_allclose(inputs_val, np.asarray(res_ifft))
 
-        inputs_val = numpy.random.random((1, N, N, 2)).astype('float32')
+        inputs_val = np.random.random((1, N, N, 2)).astype('float32')
         inputs = theano.shared(inputs_val)
 
         irfft = theano.gpuarray.fft.cuirfft(inputs)
-        f_irfft = theano.function([], irfft)
+        f_irfft = theano.function([], irfft, mode=mode_with_gpu)
         res_irfft = f_irfft()
         inputs_ref = inputs_val[..., 0] + inputs_val[..., 1] * 1j
 
@@ -123,7 +122,7 @@ class TestFFT(unittest.TestCase):
         res_rfft_comp = (np.asarray(res_rfft[:, :, :, 0]) +
                          1j * np.asarray(res_rfft[:, :, :, 1]))
 
-        rfft_ref = numpy.fft.rfftn(inputs_val, axes=(1, 2))
+        rfft_ref = np.fft.rfftn(inputs_val, axes=(1, 2))
 
         utt.assert_allclose(rfft_ref / N, res_rfft_comp, atol=1e-4, rtol=1e-4)
 
@@ -146,7 +145,7 @@ class TestFFT(unittest.TestCase):
         f_irfft = theano.function([], irfft, mode=mode_with_gpu)
         res_irfft = f_irfft()
 
-        irfft_ref = numpy.fft.irfftn(inputs_ref, axes=(1, 2))
+        irfft_ref = np.fft.irfftn(inputs_ref, axes=(1, 2))
 
         utt.assert_allclose(irfft_ref * N, res_irfft, atol=1e-4, rtol=1e-4)
 
@@ -165,22 +164,22 @@ class TestFFT(unittest.TestCase):
         def f_rfft(inp):
             return theano.gpuarray.fft.curfft(inp)
         inputs_val = np.random.random((1, N, N)).astype('float32')
-        utt.verify_grad(f_rfft, [inputs_val], eps=eps)
+        utt.verify_grad(f_rfft, [inputs_val], eps=eps, mode=mode_with_gpu)
 
         def f_irfft(inp):
             return theano.gpuarray.fft.cuirfft(inp)
         inputs_val = np.random.random((1, N, N // 2 + 1, 2)).astype('float32')
-        utt.verify_grad(f_irfft, [inputs_val], eps=eps)
+        utt.verify_grad(f_irfft, [inputs_val], eps=eps, mode=mode_with_gpu)
 
         def f_rfft(inp):
             return theano.gpuarray.fft.curfft(inp, norm='ortho')
         inputs_val = np.random.random((1, N, N)).astype('float32')
-        utt.verify_grad(f_rfft, [inputs_val], eps=eps)
+        utt.verify_grad(f_rfft, [inputs_val], eps=eps, mode=mode_with_gpu)
 
         def f_irfft(inp):
             return theano.gpuarray.fft.cuirfft(inp, norm='no_norm')
         inputs_val = np.random.random((1, N, N // 2 + 1, 2)).astype('float32')
-        utt.verify_grad(f_irfft, [inputs_val], eps=eps)
+        utt.verify_grad(f_irfft, [inputs_val], eps=eps, mode=mode_with_gpu)
 
     def test_odd(self):
         M = N - 1
@@ -195,7 +194,7 @@ class TestFFT(unittest.TestCase):
         res_rfft_comp = (np.asarray(res_rfft[:, :, :, 0]) +
                          1j * np.asarray(res_rfft[:, :, :, 1]))
 
-        rfft_ref = numpy.fft.rfftn(inputs_val, s=(M, M), axes=(1, 2))
+        rfft_ref = np.fft.rfftn(inputs_val, s=(M, M), axes=(1, 2))
 
         utt.assert_allclose(rfft_ref, res_rfft_comp, atol=1e-4, rtol=1e-4)
 
@@ -214,7 +213,7 @@ class TestFFT(unittest.TestCase):
         res_irfft = f_irfft()
 
         inputs_ref = inputs_val[:, :, :, 0] + 1j * inputs_val[:, :, :, 1]
-        irfft_ref = numpy.fft.irfftn(inputs_ref, s=(M, M), axes=(1, 2)) * M
+        irfft_ref = np.fft.irfftn(inputs_ref, s=(M, M), axes=(1, 2)) * M
 
         utt.assert_allclose(irfft_ref, res_irfft, atol=1e-4, rtol=1e-4)
 
@@ -225,30 +224,30 @@ class TestFFT(unittest.TestCase):
         def f_rfft(inp):
             return theano.gpuarray.fft.curfft(inp)
         inputs_val = np.random.random((1, M, M)).astype('float32')
-        utt.verify_grad(f_rfft, [inputs_val], eps=eps)
+        utt.verify_grad(f_rfft, [inputs_val], eps=eps, mode=mode_with_gpu)
 
         def f_irfft(inp):
             return theano.gpuarray.fft.cuirfft(inp, is_odd=True)
         inputs_val = np.random.random((1, M, M // 2 + 1, 2)).astype('float32')
-        utt.verify_grad(f_irfft, [inputs_val], eps=eps)
+        utt.verify_grad(f_irfft, [inputs_val], eps=eps, mode=mode_with_gpu)
 
         def f_rfft(inp):
             return theano.gpuarray.fft.curfft(inp, norm='ortho')
         inputs_val = np.random.random((1, M, M)).astype('float32')
-        utt.verify_grad(f_rfft, [inputs_val], eps=eps)
+        utt.verify_grad(f_rfft, [inputs_val], eps=eps, mode=mode_with_gpu)
 
         def f_irfft(inp):
             return theano.gpuarray.fft.cuirfft(inp, norm='no_norm', is_odd=True)
         inputs_val = np.random.random((1, M, M // 2 + 1, 2)).astype('float32')
-        utt.verify_grad(f_irfft, [inputs_val], eps=eps)
+        utt.verify_grad(f_irfft, [inputs_val], eps=eps, mode=mode_with_gpu)
 
     def test_params(self):
-        inputs_val = numpy.random.random((1, N)).astype('float32')
+        inputs_val = np.random.random((1, N)).astype('float32')
         inputs = theano.shared(inputs_val)
 
         self.assertRaises(ValueError, theano.gpuarray.fft.curfft, inputs, norm=123)
 
-        inputs_val = numpy.random.random((1, N // 2 + 1, 2)).astype('float32')
+        inputs_val = np.random.random((1, N // 2 + 1, 2)).astype('float32')
         inputs = theano.shared(inputs_val)
 
         self.assertRaises(ValueError, theano.gpuarray.fft.cuirfft, inputs, norm=123)

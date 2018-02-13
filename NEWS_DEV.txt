@@ -4,327 +4,408 @@
 DRAFT Release Notes
 ===================
 
-git log -p rel-0.8.0... |grep Merge|grep '#[0123456789]' |cut -f 8 -d ' ' | sed 's\#\* https://github.com/Theano/Theano/pull/\'
+git log -p rel-1.0.1... |grep Merge|grep '#[0123456789]' |cut -f 8 -d ' ' | sed 's\#\* https://github.com/Theano/Theano/pull/\'
 
 # Commit count per user
-git shortlog -sn rel-0.8.0..
+git shortlog -sn rel-1.0.1..
 
 
+Highlights:
+ - ...
 
-# docker?
+Interface changes:
+ - ...
 
-Highlight:
+Convolution updates:
+ - ...
 
-Computation and compilation speed up
-Multi-cores convolution and pooling on CPU
-More numerical stability by default for some graph.
-CuDNN: 5.1, batch normalization, (RNN soon)
-Dilated convolution
-Multiple-GPU, synchrone update (via platoon, use NCCL)
-Partial function evaluation
-Add gradient of solve, tensorinv (CPU), tensorsolve (CPU) searchsorted (CPU)
-Add Multinomial Without Replacement
-Pooling parameters can change at run time
-Jenkins (gpu tests run on PR in addition to daily buildbot)
+GPU:
+ - ...
 
+ - cuDNN support
+   - ...
 
-Add DownsampleFactorMaxGradGrad.grad
-Better Python 3.5 support
-Mac, Windows new versions fixes
-More Rop support
-More stack trace in error message
-Speed up cholesky grad
-conv3d2d support full and half mode
-indexing support ellipsis a[..., 3], a[1,...,3]
+New features:
+ - ...
 
-Details
-Doc/error message fixes/updtes
-GpuJoin support negative axis.
-Move softsign out of sandbox to theano.tensor.nnet.softsign
-norm(keepdims) param added
-Add flag profiling.ignore_first_call
-More op in the new back-end.
-Crash fixes
-More graph optimizations
-tensor5, dtensor5...
-compiledir_format support device
-make scan grad more deterministic.
-Add support for space in path
-Roll make the shift be modulo the size of the axis we roll on
+Others:
+ - ...
+
+Other more detailed changes:
+ - ...
 
 
+PULL REQUESTS CHECKED FOR 1.0.1 SINCE 1.0.0
+* https://github.com/Theano/Theano/pull/6530
+* https://github.com/Theano/Theano/pull/6513
+* https://github.com/Theano/Theano/pull/6520
+* https://github.com/Theano/Theano/pull/6525
+* https://github.com/Theano/Theano/pull/6517
+* https://github.com/Theano/Theano/pull/6506
+* https://github.com/Theano/Theano/pull/6512
 
-ALL THE PR BELLOW HAVE BEEN CHECKED
-
-* https://github.com/Theano/Theano/pull/5001
-* https://github.com/Theano/Theano/pull/5002
-* https://github.com/Theano/Theano/pull/4984
-* https://github.com/Theano/Theano/pull/4997
-* https://github.com/Theano/Theano/pull/4991
-* https://github.com/Theano/Theano/pull/4995
-* https://github.com/Theano/Theano/pull/4985
-* https://github.com/Theano/Theano/pull/4972
-* https://github.com/Theano/Theano/pull/4986
-* https://github.com/Theano/Theano/pull/4976
-* https://github.com/Theano/Theano/pull/4951
-* https://github.com/Theano/Theano/pull/4983
-* https://github.com/Theano/Theano/pull/4977
-* https://github.com/Theano/Theano/pull/4968
-* https://github.com/Theano/Theano/pull/4924
-* https://github.com/Theano/Theano/pull/4971
-* https://github.com/Theano/Theano/pull/4876
-* https://github.com/Theano/Theano/pull/4967
-* https://github.com/Theano/Theano/pull/4966
-* https://github.com/Theano/Theano/pull/4964
-* https://github.com/Theano/Theano/pull/4965
-* https://github.com/Theano/Theano/pull/4932
-* https://github.com/Theano/Theano/pull/4958
-* https://github.com/Theano/Theano/pull/4953
-* https://github.com/Theano/Theano/pull/4957
-* https://github.com/Theano/Theano/pull/4956
-* https://github.com/Theano/Theano/pull/4954
-* https://github.com/Theano/Theano/pull/4949
-* https://github.com/Theano/Theano/pull/4950
-* https://github.com/Theano/Theano/pull/4937
-* https://github.com/Theano/Theano/pull/4911
-* https://github.com/Theano/Theano/pull/4947
-* https://github.com/Theano/Theano/pull/4944
-* https://github.com/Theano/Theano/pull/4925
-* https://github.com/Theano/Theano/pull/4941
-* https://github.com/Theano/Theano/pull/4934
-* https://github.com/Theano/Theano/pull/4750
-* https://github.com/Theano/Theano/pull/4756
-* https://github.com/Theano/Theano/pull/4930
-* https://github.com/Theano/Theano/pull/4923
-* https://github.com/Theano/Theano/pull/4920
-* https://github.com/Theano/Theano/pull/4529
-* https://github.com/Theano/Theano/pull/4906
-* https://github.com/Theano/Theano/pull/4913
-* https://github.com/Theano/Theano/pull/4894
-* https://github.com/Theano/Theano/pull/4898
-* https://github.com/Theano/Theano/pull/4773
-* https://github.com/Theano/Theano/pull/4886
-* https://github.com/Theano/Theano/pull/4681
-* https://github.com/Theano/Theano/pull/4888
-* https://github.com/Theano/Theano/pull/4901
-* https://github.com/Theano/Theano/pull/4814
-* https://github.com/Theano/Theano/pull/4810
-* https://github.com/Theano/Theano/pull/4893
-* https://github.com/Theano/Theano/pull/4891
-* https://github.com/Theano/Theano/pull/4772
-* https://github.com/Theano/Theano/pull/4883
-* https://github.com/Theano/Theano/pull/4874
-* https://github.com/Theano/Theano/pull/4852
-* https://github.com/Theano/Theano/pull/4881
-* https://github.com/Theano/Theano/pull/4873
-* https://github.com/Theano/Theano/pull/4871
-* https://github.com/Theano/Theano/pull/4872
-* https://github.com/Theano/Theano/pull/4870
-* https://github.com/Theano/Theano/pull/4865
-* https://github.com/Theano/Theano/pull/4843
-* https://github.com/Theano/Theano/pull/4831
-* https://github.com/Theano/Theano/pull/4867
-* https://github.com/Theano/Theano/pull/4846
-* https://github.com/Theano/Theano/pull/4866
-* https://github.com/Theano/Theano/pull/4864
-* https://github.com/Theano/Theano/pull/4861
-* https://github.com/Theano/Theano/pull/4853
-* https://github.com/Theano/Theano/pull/4856
-* https://github.com/Theano/Theano/pull/4855
-* https://github.com/Theano/Theano/pull/4848
-* https://github.com/Theano/Theano/pull/4824
-* https://github.com/Theano/Theano/pull/4835
-* https://github.com/Theano/Theano/pull/4838
-* https://github.com/Theano/Theano/pull/4841
-* https://github.com/Theano/Theano/pull/4842
-* https://github.com/Theano/Theano/pull/4826
-* https://github.com/Theano/Theano/pull/4798
-* https://github.com/Theano/Theano/pull/4830
-* https://github.com/Theano/Theano/pull/4821
-* https://github.com/Theano/Theano/pull/4808
-* https://github.com/Theano/Theano/pull/4822
-* https://github.com/Theano/Theano/pull/4820
-* https://github.com/Theano/Theano/pull/4804
-* https://github.com/Theano/Theano/pull/4815
-* https://github.com/Theano/Theano/pull/4806
-* https://github.com/Theano/Theano/pull/4802
-* https://github.com/Theano/Theano/pull/4788
-* https://github.com/Theano/Theano/pull/4799
-* https://github.com/Theano/Theano/pull/4669
-* https://github.com/Theano/Theano/pull/4768
-* https://github.com/Theano/Theano/pull/4769
-* https://github.com/Theano/Theano/pull/4771
-* https://github.com/Theano/Theano/pull/4764
-* https://github.com/Theano/Theano/pull/4757
-* https://github.com/Theano/Theano/pull/4747
-* https://github.com/Theano/Theano/pull/4743
-* https://github.com/Theano/Theano/pull/4737
-* https://github.com/Theano/Theano/pull/4733
-* https://github.com/Theano/Theano/pull/4725
-* https://github.com/Theano/Theano/pull/4726
-* https://github.com/Theano/Theano/pull/4683
-* https://github.com/Theano/Theano/pull/4570
-* https://github.com/Theano/Theano/pull/4712
-* https://github.com/Theano/Theano/pull/4716
-* https://github.com/Theano/Theano/pull/4654
-* https://github.com/Theano/Theano/pull/4694
-* https://github.com/Theano/Theano/pull/4691
-* https://github.com/Theano/Theano/pull/4696
-* https://github.com/Theano/Theano/pull/4591
-* https://github.com/Theano/Theano/pull/4701
-* https://github.com/Theano/Theano/pull/4678
-* https://github.com/Theano/Theano/pull/4587
-* https://github.com/Theano/Theano/pull/4676
-* https://github.com/Theano/Theano/pull/4674
-* https://github.com/Theano/Theano/pull/4615
-* https://github.com/Theano/Theano/pull/4582
-* https://github.com/Theano/Theano/pull/4663
-* https://github.com/Theano/Theano/pull/4584
-* https://github.com/Theano/Theano/pull/4604
-* https://github.com/Theano/Theano/pull/4661
-* https://github.com/Theano/Theano/pull/4631
-* https://github.com/Theano/Theano/pull/4628
-* https://github.com/Theano/Theano/pull/4535
-* https://github.com/Theano/Theano/pull/4642
-* https://github.com/Theano/Theano/pull/4629
-* https://github.com/Theano/Theano/pull/4632
-* https://github.com/Theano/Theano/pull/4388
-* https://github.com/Theano/Theano/pull/4634
-* https://github.com/Theano/Theano/pull/4630
-* https://github.com/Theano/Theano/pull/4619
-* https://github.com/Theano/Theano/pull/4618
-* https://github.com/Theano/Theano/pull/4621
-* https://github.com/Theano/Theano/pull/4611
-* https://github.com/Theano/Theano/pull/4607
-* https://github.com/Theano/Theano/pull/4617
-* https://github.com/Theano/Theano/pull/4376
-* https://github.com/Theano/Theano/pull/4605
-* https://github.com/Theano/Theano/pull/4613
-* https://github.com/Theano/Theano/pull/4576
-* https://github.com/Theano/Theano/pull/4614
-* https://github.com/Theano/Theano/pull/4556
-* https://github.com/Theano/Theano/pull/4128
-* https://github.com/Theano/Theano/pull/4606
-* https://github.com/Theano/Theano/pull/4608
-* https://github.com/Theano/Theano/pull/4598
-* https://github.com/Theano/Theano/pull/4404
-* https://github.com/Theano/Theano/pull/4600
-* https://github.com/Theano/Theano/pull/4153
-* https://github.com/Theano/Theano/pull/4593
-* https://github.com/Theano/Theano/pull/4440
-* https://github.com/Theano/Theano/pull/4578
-* https://github.com/Theano/Theano/pull/4577
-* https://github.com/Theano/Theano/pull/4567
-* https://github.com/Theano/Theano/pull/4148
-* https://github.com/Theano/Theano/pull/4524
-* https://github.com/Theano/Theano/pull/4261
-* https://github.com/Theano/Theano/pull/4571
-* https://github.com/Theano/Theano/pull/4566
-* https://github.com/Theano/Theano/pull/4565
-* https://github.com/Theano/Theano/pull/4500
-* https://github.com/Theano/Theano/pull/4554
-* https://github.com/Theano/Theano/pull/4544
-* https://github.com/Theano/Theano/pull/4546
-* https://github.com/Theano/Theano/pull/4542
-* https://github.com/Theano/Theano/pull/4549
-* https://github.com/Theano/Theano/pull/4541
-* https://github.com/Theano/Theano/pull/4532
-* https://github.com/Theano/Theano/pull/4540
-* https://github.com/Theano/Theano/pull/4537
-* https://github.com/Theano/Theano/pull/4525
-* https://github.com/Theano/Theano/pull/4533
-* https://github.com/Theano/Theano/pull/4530
-* https://github.com/Theano/Theano/pull/4526
-* https://github.com/Theano/Theano/pull/4522
-* https://github.com/Theano/Theano/pull/4501
-* https://github.com/Theano/Theano/pull/4512
-* https://github.com/Theano/Theano/pull/4518
-* https://github.com/Theano/Theano/pull/4468
-* https://github.com/Theano/Theano/pull/4506
-* https://github.com/Theano/Theano/pull/4515
-* https://github.com/Theano/Theano/pull/4511
-* https://github.com/Theano/Theano/pull/4505
-* https://github.com/Theano/Theano/pull/4504
-* https://github.com/Theano/Theano/pull/4503
-* https://github.com/Theano/Theano/pull/4496
-* https://github.com/Theano/Theano/pull/4498
-* https://github.com/Theano/Theano/pull/4493
-* https://github.com/Theano/Theano/pull/4463
-* https://github.com/Theano/Theano/pull/4488
-* https://github.com/Theano/Theano/pull/4454
-* https://github.com/Theano/Theano/pull/4492
-* https://github.com/Theano/Theano/pull/4489
-* https://github.com/Theano/Theano/pull/4491
-* https://github.com/Theano/Theano/pull/4478
-* https://github.com/Theano/Theano/pull/4439
-* https://github.com/Theano/Theano/pull/4484
-* https://github.com/Theano/Theano/pull/4420
-* https://github.com/Theano/Theano/pull/4464
-* https://github.com/Theano/Theano/pull/4472
-* https://github.com/Theano/Theano/pull/4467
-* https://github.com/Theano/Theano/pull/4470
-* https://github.com/Theano/Theano/pull/4475
-* https://github.com/Theano/Theano/pull/4473
-* https://github.com/Theano/Theano/pull/4244
-* https://github.com/Theano/Theano/pull/4443
-* https://github.com/Theano/Theano/pull/4450
-* https://github.com/Theano/Theano/pull/4378
-* https://github.com/Theano/Theano/pull/4422
-* https://github.com/Theano/Theano/pull/4413
-* https://github.com/Theano/Theano/pull/4418
-* https://github.com/Theano/Theano/pull/4419
-* https://github.com/Theano/Theano/pull/4383
-* https://github.com/Theano/Theano/pull/4062
-* https://github.com/Theano/Theano/pull/4410
-* https://github.com/Theano/Theano/pull/4343
-* https://github.com/Theano/Theano/pull/4415
-* https://github.com/Theano/Theano/pull/4414
-* https://github.com/Theano/Theano/pull/4401
-* https://github.com/Theano/Theano/pull/4367
-* https://github.com/Theano/Theano/pull/4406
-* https://github.com/Theano/Theano/pull/4408
-* https://github.com/Theano/Theano/pull/4407
-* https://github.com/Theano/Theano/pull/4323
-* https://github.com/Theano/Theano/pull/4371
-* https://github.com/Theano/Theano/pull/4370
-* https://github.com/Theano/Theano/pull/4279
-* https://github.com/Theano/Theano/pull/4381
-* https://github.com/Theano/Theano/pull/4263
-* https://github.com/Theano/Theano/pull/4375
-* https://github.com/Theano/Theano/pull/4374
-* https://github.com/Theano/Theano/pull/4290
-* https://github.com/Theano/Theano/pull/4373
-* https://github.com/Theano/Theano/pull/4366
-* https://github.com/Theano/Theano/pull/4362
-* https://github.com/Theano/Theano/pull/4363
-* https://github.com/Theano/Theano/pull/4344
-* https://github.com/Theano/Theano/pull/4335
-* https://github.com/Theano/Theano/pull/4330
-* https://github.com/Theano/Theano/pull/4324
-* https://github.com/Theano/Theano/pull/4340
-* https://github.com/Theano/Theano/pull/4336
-* https://github.com/Theano/Theano/pull/4327
-* https://github.com/Theano/Theano/pull/4333
-* https://github.com/Theano/Theano/pull/4301
-* https://github.com/Theano/Theano/pull/4310
-* https://github.com/Theano/Theano/pull/4309
-* https://github.com/Theano/Theano/pull/4298
-* https://github.com/Theano/Theano/pull/4256
-* https://github.com/Theano/Theano/pull/4287
-* https://github.com/Theano/Theano/pull/4288
-* https://github.com/Theano/Theano/pull/4286
-* https://github.com/Theano/Theano/pull/3983
-* https://github.com/Theano/Theano/pull/4246
-* https://github.com/Theano/Theano/pull/3758
-* https://github.com/Theano/Theano/pull/4285
-* https://github.com/Theano/Theano/pull/4278
-* https://github.com/Theano/Theano/pull/4216
-* https://github.com/Theano/Theano/pull/4273
-* https://github.com/Theano/Theano/pull/4281
-* https://github.com/Theano/Theano/pull/4245
-* https://github.com/Theano/Theano/pull/4250
-* https://github.com/Theano/Theano/pull/4235
-* https://github.com/Theano/Theano/pull/4260
+ALL THE PR BELLOW HAVE BEEN CHECKED FOR FINAL RELEASE 1.0.0 SINCE 0.9.0
+* https://github.com/Theano/Theano/pull/6509
+* https://github.com/Theano/Theano/pull/6508
+* https://github.com/Theano/Theano/pull/6505
+* https://github.com/Theano/Theano/pull/6496
+* https://github.com/Theano/Theano/pull/6495
+* https://github.com/Theano/Theano/pull/6492
+* https://github.com/Theano/Theano/pull/6489
+* https://github.com/Theano/Theano/pull/6488
+* https://github.com/Theano/Theano/pull/6490
+* https://github.com/Theano/Theano/pull/5932
+* https://github.com/Theano/Theano/pull/6479
+* https://github.com/Theano/Theano/pull/6401
+* https://github.com/Theano/Theano/pull/6472
+* https://github.com/Theano/Theano/pull/6477
+* https://github.com/Theano/Theano/pull/6475
+* https://github.com/Theano/Theano/pull/6468
+* https://github.com/Theano/Theano/pull/6467
+* https://github.com/Theano/Theano/pull/6469
+* https://github.com/Theano/Theano/pull/6466
+* https://github.com/Theano/Theano/pull/6460
+* https://github.com/Theano/Theano/pull/6459
+* https://github.com/Theano/Theano/pull/6457
+* https://github.com/Theano/Theano/pull/6456
+* https://github.com/Theano/Theano/pull/6453
+* https://github.com/Theano/Theano/pull/6452
+* https://github.com/Theano/Theano/pull/6430
+* https://github.com/Theano/Theano/pull/6447
+* https://github.com/Theano/Theano/pull/6446
+* https://github.com/Theano/Theano/pull/6431
+* https://github.com/Theano/Theano/pull/6445
+* https://github.com/Theano/Theano/pull/6348
+* https://github.com/Theano/Theano/pull/6416
+* https://github.com/Theano/Theano/pull/6443
+* https://github.com/Theano/Theano/pull/6440
+* https://github.com/Theano/Theano/pull/6388
+* https://github.com/Theano/Theano/pull/5641
+* https://github.com/Theano/Theano/pull/6367
+* https://github.com/Theano/Theano/pull/6437
+* https://github.com/Theano/Theano/pull/6439
+* https://github.com/Theano/Theano/pull/6425
+* https://github.com/Theano/Theano/pull/6434
+* https://github.com/Theano/Theano/pull/5959
+* https://github.com/Theano/Theano/pull/6005
+* https://github.com/Theano/Theano/pull/6427
+* https://github.com/Theano/Theano/pull/6424
+* https://github.com/Theano/Theano/pull/6419
+* https://github.com/Theano/Theano/pull/6415
+* https://github.com/Theano/Theano/pull/6418
+* https://github.com/Theano/Theano/pull/5891
+* https://github.com/Theano/Theano/pull/6316
+* https://github.com/Theano/Theano/pull/6331
+* https://github.com/Theano/Theano/pull/6100
+* https://github.com/Theano/Theano/pull/6412
+* https://github.com/Theano/Theano/pull/6221
+* https://github.com/Theano/Theano/pull/6386
+* https://github.com/Theano/Theano/pull/6411
+* https://github.com/Theano/Theano/pull/6405
+* https://github.com/Theano/Theano/pull/6410
+* https://github.com/Theano/Theano/pull/6413
+* https://github.com/Theano/Theano/pull/6389
+* https://github.com/Theano/Theano/pull/6409
+* https://github.com/Theano/Theano/pull/6406
+* https://github.com/Theano/Theano/pull/6396
+* https://github.com/Theano/Theano/pull/6392
+* https://github.com/Theano/Theano/pull/6393
+* https://github.com/Theano/Theano/pull/6384
+* https://github.com/Theano/Theano/pull/6326
+* https://github.com/Theano/Theano/pull/6317
+* https://github.com/Theano/Theano/pull/6269
+* https://github.com/Theano/Theano/pull/5688
+* https://github.com/Theano/Theano/pull/6376
+* https://github.com/Theano/Theano/pull/6377
+* https://github.com/Theano/Theano/pull/6355
+* https://github.com/Theano/Theano/pull/6373
+* https://github.com/Theano/Theano/pull/6374
+* https://github.com/Theano/Theano/pull/6371
+* https://github.com/Theano/Theano/pull/6362
+* https://github.com/Theano/Theano/pull/6368
+* https://github.com/Theano/Theano/pull/6339
+* https://github.com/Theano/Theano/pull/6366
+* https://github.com/Theano/Theano/pull/6364
+* https://github.com/Theano/Theano/pull/6349
+* https://github.com/Theano/Theano/pull/6361
+* https://github.com/Theano/Theano/pull/6356
+* https://github.com/Theano/Theano/pull/6359
+* https://github.com/Theano/Theano/pull/6286
+* https://github.com/Theano/Theano/pull/6357
+* https://github.com/Theano/Theano/pull/6354
+* https://github.com/Theano/Theano/pull/6336
+* https://github.com/Theano/Theano/pull/6351
+* https://github.com/Theano/Theano/pull/6301
+* https://github.com/Theano/Theano/pull/6333
+* https://github.com/Theano/Theano/pull/6341
+* https://github.com/Theano/Theano/pull/6332
+* https://github.com/Theano/Theano/pull/6319
+* https://github.com/Theano/Theano/pull/6302
+* https://github.com/Theano/Theano/pull/6300
+* https://github.com/Theano/Theano/pull/6323
+* https://github.com/Theano/Theano/pull/6324
+* https://github.com/Theano/Theano/pull/5817
+* https://github.com/Theano/Theano/pull/6312
+* https://github.com/Theano/Theano/pull/6061
+* https://github.com/Theano/Theano/pull/6305
+* https://github.com/Theano/Theano/pull/6059
+* https://github.com/Theano/Theano/pull/6315
+* https://github.com/Theano/Theano/pull/6295
+* https://github.com/Theano/Theano/pull/6252
+* https://github.com/Theano/Theano/pull/6267
+* https://github.com/Theano/Theano/pull/6207
+* https://github.com/Theano/Theano/pull/6309
+* https://github.com/Theano/Theano/pull/6307
+* https://github.com/Theano/Theano/pull/6000
+* https://github.com/Theano/Theano/pull/6293
+* https://github.com/Theano/Theano/pull/6292
+* https://github.com/Theano/Theano/pull/6299
+* https://github.com/Theano/Theano/pull/6143
+* https://github.com/Theano/Theano/pull/6296
+* https://github.com/Theano/Theano/pull/6280
+* https://github.com/Theano/Theano/pull/6289
+* https://github.com/Theano/Theano/pull/6285
+* https://github.com/Theano/Theano/pull/6275
+* https://github.com/Theano/Theano/pull/6218
+* https://github.com/Theano/Theano/pull/6271
+* https://github.com/Theano/Theano/pull/6253
+* https://github.com/Theano/Theano/pull/6273
+* https://github.com/Theano/Theano/pull/6262
+* https://github.com/Theano/Theano/pull/6214
+* https://github.com/Theano/Theano/pull/6264
+* https://github.com/Theano/Theano/pull/6256
+* https://github.com/Theano/Theano/pull/6254
+* https://github.com/Theano/Theano/pull/6220
+* https://github.com/Theano/Theano/pull/5949
+* https://github.com/Theano/Theano/pull/6243
+* https://github.com/Theano/Theano/pull/6250
+* https://github.com/Theano/Theano/pull/6225
+* https://github.com/Theano/Theano/pull/6242
+* https://github.com/Theano/Theano/pull/6213
+* https://github.com/Theano/Theano/pull/6199
+* https://github.com/Theano/Theano/pull/6209
+* https://github.com/Theano/Theano/pull/6216
+* https://github.com/Theano/Theano/pull/6215
+* https://github.com/Theano/Theano/pull/6182
+* https://github.com/Theano/Theano/pull/6194
+* https://github.com/Theano/Theano/pull/6190
+* https://github.com/Theano/Theano/pull/6146
+* https://github.com/Theano/Theano/pull/6201
+* https://github.com/Theano/Theano/pull/6150
+* https://github.com/Theano/Theano/pull/6204
+* https://github.com/Theano/Theano/pull/6166
+* https://github.com/Theano/Theano/pull/6174
+* https://github.com/Theano/Theano/pull/6205
+* https://github.com/Theano/Theano/pull/6183
+* https://github.com/Theano/Theano/pull/6186
+* https://github.com/Theano/Theano/pull/6203
+* https://github.com/Theano/Theano/pull/6161
+* https://github.com/Theano/Theano/pull/6164
+* https://github.com/Theano/Theano/pull/6050
+* https://github.com/Theano/Theano/pull/6178
+* https://github.com/Theano/Theano/pull/6180
+* https://github.com/Theano/Theano/pull/6173
+* https://github.com/Theano/Theano/pull/6170
+* https://github.com/Theano/Theano/pull/6092
+* https://github.com/Theano/Theano/pull/6163
+* https://github.com/Theano/Theano/pull/6171
+* https://github.com/Theano/Theano/pull/6169
+* https://github.com/Theano/Theano/pull/6165
+* https://github.com/Theano/Theano/pull/5914
+* https://github.com/Theano/Theano/pull/5775
+* https://github.com/Theano/Theano/pull/6147
+* https://github.com/Theano/Theano/pull/6159
+* https://github.com/Theano/Theano/pull/6156
+* https://github.com/Theano/Theano/pull/6154
+* https://github.com/Theano/Theano/pull/5991
+* https://github.com/Theano/Theano/pull/6149
+* https://github.com/Theano/Theano/pull/6151
+* https://github.com/Theano/Theano/pull/6116
+* https://github.com/Theano/Theano/pull/6111
+* https://github.com/Theano/Theano/pull/6139
+* https://github.com/Theano/Theano/pull/6097
+* https://github.com/Theano/Theano/pull/6070
+* https://github.com/Theano/Theano/pull/6148
+* https://github.com/Theano/Theano/pull/6140
+* https://github.com/Theano/Theano/pull/6138
+* https://github.com/Theano/Theano/pull/5881
+* https://github.com/Theano/Theano/pull/6130
+* https://github.com/Theano/Theano/pull/6044
+* https://github.com/Theano/Theano/pull/6060
+* https://github.com/Theano/Theano/pull/6109
+* https://github.com/Theano/Theano/pull/6119
+* https://github.com/Theano/Theano/pull/6123
+* https://github.com/Theano/Theano/pull/6117
+* https://github.com/Theano/Theano/pull/6120
+* https://github.com/Theano/Theano/pull/5747
+* https://github.com/Theano/Theano/pull/6087
+* https://github.com/Theano/Theano/pull/6108
+* https://github.com/Theano/Theano/pull/6112
+* https://github.com/Theano/Theano/pull/6106
+* https://github.com/Theano/Theano/pull/6107
+* https://github.com/Theano/Theano/pull/6105
+* https://github.com/Theano/Theano/pull/6102
+* https://github.com/Theano/Theano/pull/6101
+* https://github.com/Theano/Theano/pull/6077
+* https://github.com/Theano/Theano/pull/6085
+* https://github.com/Theano/Theano/pull/6091
+* https://github.com/Theano/Theano/pull/6013
+* https://github.com/Theano/Theano/pull/6088
+* https://github.com/Theano/Theano/pull/6069
+* https://github.com/Theano/Theano/pull/6084
+* https://github.com/Theano/Theano/pull/6083
+* https://github.com/Theano/Theano/pull/6081
+* https://github.com/Theano/Theano/pull/6072
+* https://github.com/Theano/Theano/pull/6045
+* https://github.com/Theano/Theano/pull/6082
+* https://github.com/Theano/Theano/pull/6049
+* https://github.com/Theano/Theano/pull/6076
+* https://github.com/Theano/Theano/pull/6062
+* https://github.com/Theano/Theano/pull/6041
+* https://github.com/Theano/Theano/pull/6057
+* https://github.com/Theano/Theano/pull/6055
+* https://github.com/Theano/Theano/pull/6056
+* https://github.com/Theano/Theano/pull/6043
+* https://github.com/Theano/Theano/pull/6032
+* https://github.com/Theano/Theano/pull/6030
+* https://github.com/Theano/Theano/pull/5942
+* https://github.com/Theano/Theano/pull/6025
+* https://github.com/Theano/Theano/pull/6038
+* https://github.com/Theano/Theano/pull/6034
+* https://github.com/Theano/Theano/pull/6012
+* https://github.com/Theano/Theano/pull/6029
+* https://github.com/Theano/Theano/pull/6015
+* https://github.com/Theano/Theano/pull/6027
+* https://github.com/Theano/Theano/pull/6026
+* https://github.com/Theano/Theano/pull/5980
+* https://github.com/Theano/Theano/pull/6021
+* https://github.com/Theano/Theano/pull/6022
+* https://github.com/Theano/Theano/pull/6011
+* https://github.com/Theano/Theano/pull/5935
+* https://github.com/Theano/Theano/pull/5955
+* https://github.com/Theano/Theano/pull/6009
+* https://github.com/Theano/Theano/pull/5016
+* https://github.com/Theano/Theano/pull/5794
+* https://github.com/Theano/Theano/pull/5996
+* https://github.com/Theano/Theano/pull/5923
+* https://github.com/Theano/Theano/pull/5993
+* https://github.com/Theano/Theano/pull/5983
+* https://github.com/Theano/Theano/pull/5964
+* https://github.com/Theano/Theano/pull/5940
+* https://github.com/Theano/Theano/pull/5915
+* https://github.com/Theano/Theano/pull/5989
+* https://github.com/Theano/Theano/pull/5988
+* https://github.com/Theano/Theano/pull/5987
+* https://github.com/Theano/Theano/pull/5908
+* https://github.com/Theano/Theano/pull/5974
+* https://github.com/Theano/Theano/pull/5965
+* https://github.com/Theano/Theano/pull/5960
+* https://github.com/Theano/Theano/pull/5957
+* https://github.com/Theano/Theano/pull/5936
+* https://github.com/Theano/Theano/pull/5950
+* https://github.com/Theano/Theano/pull/5948
+* https://github.com/Theano/Theano/pull/5946
+* https://github.com/Theano/Theano/pull/5947
+* https://github.com/Theano/Theano/pull/5927
+* https://github.com/Theano/Theano/pull/5944
+* https://github.com/Theano/Theano/pull/5918
+* https://github.com/Theano/Theano/pull/5941
+* https://github.com/Theano/Theano/pull/5931
+* https://github.com/Theano/Theano/pull/5937
+* https://github.com/Theano/Theano/pull/5852
+* https://github.com/Theano/Theano/pull/5922
+* https://github.com/Theano/Theano/pull/5921
+* https://github.com/Theano/Theano/pull/5902
+* https://github.com/Theano/Theano/pull/5903
+* https://github.com/Theano/Theano/pull/5909
+* https://github.com/Theano/Theano/pull/5758
+* https://github.com/Theano/Theano/pull/5778
+* https://github.com/Theano/Theano/pull/5900
+* https://github.com/Theano/Theano/pull/5895
+* https://github.com/Theano/Theano/pull/5883
+* https://github.com/Theano/Theano/pull/5896
+* https://github.com/Theano/Theano/pull/5888
+* https://github.com/Theano/Theano/pull/5886
+* https://github.com/Theano/Theano/pull/5885
+* https://github.com/Theano/Theano/pull/5873
+* https://github.com/Theano/Theano/pull/5877
+* https://github.com/Theano/Theano/pull/5878
+* https://github.com/Theano/Theano/pull/5872
+* https://github.com/Theano/Theano/pull/5870
+* https://github.com/Theano/Theano/pull/5854
+* https://github.com/Theano/Theano/pull/5865
+* https://github.com/Theano/Theano/pull/5853
+* https://github.com/Theano/Theano/pull/5850
+* https://github.com/Theano/Theano/pull/5538
+* https://github.com/Theano/Theano/pull/5863
+* https://github.com/Theano/Theano/pull/5799
+* https://github.com/Theano/Theano/pull/5859
+* https://github.com/Theano/Theano/pull/5755
+* https://github.com/Theano/Theano/pull/5860
+* https://github.com/Theano/Theano/pull/5716
+* https://github.com/Theano/Theano/pull/5842
+* https://github.com/Theano/Theano/pull/5821
+* https://github.com/Theano/Theano/pull/5789
+* https://github.com/Theano/Theano/pull/5847
+* https://github.com/Theano/Theano/pull/5735
+* https://github.com/Theano/Theano/pull/5710
+* https://github.com/Theano/Theano/pull/5843
+* https://github.com/Theano/Theano/pull/5832
+* https://github.com/Theano/Theano/pull/5814
+* https://github.com/Theano/Theano/pull/5835
+* https://github.com/Theano/Theano/pull/5834
+* https://github.com/Theano/Theano/pull/5829
+* https://github.com/Theano/Theano/pull/5785
+* https://github.com/Theano/Theano/pull/5824
+* https://github.com/Theano/Theano/pull/5820
+* https://github.com/Theano/Theano/pull/5808
+* https://github.com/Theano/Theano/pull/5815
+* https://github.com/Theano/Theano/pull/5819
+* https://github.com/Theano/Theano/pull/5612
+* https://github.com/Theano/Theano/pull/5802
+* https://github.com/Theano/Theano/pull/5796
+* https://github.com/Theano/Theano/pull/5806
+* https://github.com/Theano/Theano/pull/5782
+* https://github.com/Theano/Theano/pull/5787
+* https://github.com/Theano/Theano/pull/5774
+* https://github.com/Theano/Theano/pull/5751
+* https://github.com/Theano/Theano/pull/5779
+* https://github.com/Theano/Theano/pull/5763
+* https://github.com/Theano/Theano/pull/5746
+* https://github.com/Theano/Theano/pull/5579
+* https://github.com/Theano/Theano/pull/5772
+* https://github.com/Theano/Theano/pull/5756
+* https://github.com/Theano/Theano/pull/5769
+* https://github.com/Theano/Theano/pull/5433
+* https://github.com/Theano/Theano/pull/5760
+* https://github.com/Theano/Theano/pull/5470
+* https://github.com/Theano/Theano/pull/5759
+* https://github.com/Theano/Theano/pull/5739
+* https://github.com/Theano/Theano/pull/5752
+* https://github.com/Theano/Theano/pull/5548
+* https://github.com/Theano/Theano/pull/5749
+* https://github.com/Theano/Theano/pull/5665
+* https://github.com/Theano/Theano/pull/5562
+* https://github.com/Theano/Theano/pull/5686
+* https://github.com/Theano/Theano/pull/5718
+* https://github.com/Theano/Theano/pull/5698
+* https://github.com/Theano/Theano/pull/5720
+* https://github.com/Theano/Theano/pull/5717
+* https://github.com/Theano/Theano/pull/5715
+* https://github.com/Theano/Theano/pull/5502
+* https://github.com/Theano/Theano/pull/5533
+* https://github.com/Theano/Theano/pull/5660
+* https://github.com/Theano/Theano/pull/5682
+* https://github.com/Theano/Theano/pull/5704
+* https://github.com/Theano/Theano/pull/5687
+* https://github.com/Theano/Theano/pull/5455
+* https://github.com/Theano/Theano/pull/5667
+* https://github.com/Theano/Theano/pull/5554
+* https://github.com/Theano/Theano/pull/5486
+* https://github.com/Theano/Theano/pull/5567
+* https://github.com/Theano/Theano/pull/5615
+* https://github.com/Theano/Theano/pull/5672
+* https://github.com/Theano/Theano/pull/5524
 
 Theano Development version
 ==========================

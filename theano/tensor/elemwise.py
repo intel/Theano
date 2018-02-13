@@ -1,30 +1,26 @@
 from __future__ import absolute_import, print_function, division
-import sys
 from copy import copy
 
-import numpy
+import numpy as np
 from six import iteritems, integer_types
 from six.moves import xrange
 
 import theano
 from theano import gof
 from theano.compat import izip
-from theano.gof import Apply, Op, OpenMPOp
+from theano import change_flags
+from theano.gof import Apply, Op, COp, OpenMPOp, ParamsType
 from theano import scalar
 from theano.scalar import get_scalar_type
 from theano.printing import pprint
 from theano.gradient import DisconnectedType
 from theano.gof.null_type import NullType
-from theano.gof.utils import hash_from_dict
 from theano.tensor import elemwise_cgen as cgen
-
+from theano.misc.frozendict import frozendict
 config = theano.config
 
-# We cannot import discrete_dtypes or float_dtypes from tensor.basic yet,
-# so we redefine them here
-discrete_dtypes = list(map(str, scalar.discrete_types))
-float_dtypes = list(map(str, scalar.float_types))
-int_dtypes = list(map(str, scalar.int_types))
+
+_numpy_ver = [int(n) for n in np.__version__.split('.')[:2]]
 
 
 # tensor depends on elemwise to provide definitions for several ops
@@ -54,7 +50,7 @@ def TensorConstant(*inputs, **kwargs):
 #   DimShuffle   #
 ##################
 
-class DimShuffle(Op):
+class DimShuffle(COp):
     """
     Allows to reorder the dimensions of a tensor or insert or remove
     broadcastable dimensions.
@@ -134,12 +130,33 @@ class DimShuffle(Op):
     _f16_ok = True
     check_input = False
     __props__ = ("input_broadcastable", "new_order", "inplace")
+    c_func_file = 'c_code/dimshuffle.c'
+    c_func_name = 'APPLY_SPECIFIC(cpu_dimshuffle)'
+
+    @property
+    def params_type(self):
+        # We can't directly create `params_type` as class attribute
+        # because of importation issues related to TensorType.
+        return ParamsType(input_broadcastable=TensorType(dtype='bool', broadcastable=(False,)),
+                          _new_order=theano.tensor.lvector,
+                          transposition=TensorType(dtype='uint32', broadcastable=(False,)),
+                          inplace=theano.scalar.bool)
+
+    @property
+    def _new_order(self):
+        # Param for C code.
+        # self.new_order may contain 'x', which is not a valid integer value.
+        # We replace it with -1.
+        return [(-1 if x == 'x' else x) for x in self.new_order]
+
+    @property
+    def transposition(self):
+        return self.shuffle + self.drop
 
     def __init__(self, input_broadcastable, new_order, inplace=True):
-        input_broadcastable = tuple(input_broadcastable)
-        self.input_broadcastable = input_broadcastable
-        new_order = tuple(new_order)
-        self.new_order = new_order
+        COp.__init__(self, [self.c_func_file], self.c_func_name)
+        self.input_broadcastable = tuple(input_broadcastable)
+        self.new_order = tuple(new_order)
         if inplace is True:
             self.inplace = inplace
         else:
@@ -151,7 +168,7 @@ class DimShuffle(Op):
                 # isinstance(x, integer_types) returning False for
                 # numpy integers.  See
                 # <http://projects.scipy.org/numpy/ticket/2235>.
-                if not isinstance(j, (integer_types, numpy.integer)):
+                if not isinstance(j, (integer_types, np.integer)):
                     raise TypeError(
                         "DimShuffle indices must be python ints. "
                         "Got: '%s' of type '%s'.",
@@ -188,6 +205,13 @@ class DimShuffle(Op):
 
         if self.inplace:
             self.view_map = {0: [0]}
+
+    def __setstate__(self, state):
+        self.__dict__.update(state)
+        if not hasattr(self, 'func_files'):
+            # Perhaps we are loading an old `Op` version of DimShuffle.
+            # Let's just build the COp.
+            COp.__init__(self, [self.c_func_file], self.c_func_name)
 
     def make_node(self, _input):
         input = as_tensor_variable(_input)
@@ -226,12 +250,12 @@ class DimShuffle(Op):
         else:
             return "DimShuffle{%s}" % ",".join(str(x) for x in self.new_order)
 
-    def perform(self, node, inp, out):
+    def perform(self, node, inp, out, params):
         input, = inp
         storage, = out
         # drop
         res = input
-        if type(res) != numpy.ndarray and type(res) != numpy.memmap:
+        if type(res) != np.ndarray and type(res) != np.memmap:
             raise TypeError(res)
 
         # transpose
@@ -245,9 +269,9 @@ class DimShuffle(Op):
 
         # copy (if not inplace)
         if not self.inplace:
-            res = numpy.copy(res)
+            res = np.copy(res)
 
-        storage[0] = numpy.asarray(res)  # asarray puts scalars back into array
+        storage[0] = np.asarray(res)  # asarray puts scalars back into array
 
     def infer_shape(self, node, shapes):
         ishp, = shapes
@@ -264,123 +288,6 @@ class DimShuffle(Op):
             return [None]
         return self(*eval_points, **dict(return_list=True))
 
-    def c_code(self, node, name, inp, out, sub):
-        input, = inp
-        res, = out
-        basename = input + '__view_or_copy'
-
-        def statements(lst):
-            return ';\n'.join(lst) + ';'
-
-        nd_in = len(self.input_broadcastable)
-        nd_out = len(self.new_order)
-
-        check_input_nd = [('if (PyArray_NDIM(%(input)s) != ' + str(nd_in) + ')'
-                           '{PyErr_SetString(PyExc_NotImplementedError, '
-                           '"input nd"); %(fail)s;}')]
-
-        clear_output = ['if (%(res)s) {Py_XDECREF(%(res)s);}']
-
-        # get the copy / view of the input depending on whether we're doingi
-        # things inplace or not.
-        if self.inplace:
-            get_base = ['{ PyArrayObject * %(basename)s = %(input)s',
-                        'Py_INCREF((PyObject*)%(basename)s)']
-        else:
-            get_base = [
-                ('{ PyArrayObject * %(basename)s = '
-                 '(PyArrayObject*)PyArray_FromAny((PyObject*)%(input)s,'
-                 ' NULL, 0, 0, NPY_ARRAY_ALIGNED|NPY_ARRAY_ENSURECOPY,'
-                 ' NULL)')]
-
-        shape_statements = ['npy_intp dimensions[%i]' % nd_out]
-        for i, o in enumerate(self.new_order):
-            if o != 'x':
-                shape_statements += [('dimensions[' + str(
-                    i) + '] = PyArray_DIMS(%(basename)s)[' + str(o) + ']')]
-            else:
-                shape_statements += [('dimensions[' + str(i) + '] = 1')]
-
-        strides_statements = ['npy_intp strides[%i]' % nd_out]
-
-        # set the strides of the non-broadcasted dimensions
-        for i, o in enumerate(self.new_order):
-            if o != 'x':
-                strides_statements += [('strides[' + str(i) +
-                                        '] = PyArray_DIMS(%(basename)s)[' +
-                                        str(o) +
-                                        '] == 1? 0 : '
-                                        'PyArray_STRIDES(%(basename)s)[' +
-                                        str(o) + ']')]
-            else:
-                strides_statements += [('strides[' + str(i) + '] = 0')]
-
-        # set the strides of the broadcasted dimensions
-        # this algorithm is from numpy: PyArray_Newshape() in
-        # cvs/numpy/numpy/core/src/multiarraymodule.c
-        if nd_out > 0:
-            strides_statements.append(
-                'if (strides[' +
-                str(nd_out) +
-                '-1] == 0) strides[' +
-                str(nd_out) +
-                '-1] = PyArray_DESCR(%(basename)s)->elsize'
-            )
-        for i in xrange(nd_out - 2, -1, -1):
-            strides_statements.append(
-                "if (strides[%(i)s] == 0) strides[%(i)s] = strides[%(i)s+1] * "
-                "dimensions[%(i)s+1]" % dict(i=str(i)))
-
-        close_bracket = [
-            # create a new array,
-            ('%(res)s = (PyArrayObject*)PyArray_New(&PyArray_Type, '
-             '' + str(nd_out) + ', dimensions, '
-             'PyArray_TYPE(%(basename)s), strides, '
-             'PyArray_DATA(%(basename)s), PyArray_ITEMSIZE(%(basename)s), '
-             # borrow only the writable flag from the base
-             # the NPY_OWNDATA flag will default to 0.
-             '(NPY_ARRAY_WRITEABLE*PyArray_ISWRITEABLE(%(basename)s)), '
-             'NULL)'),
-            'if (%(res)s == NULL) %(fail)s;',
-            # recalculate flags: CONTIGUOUS, FORTRAN, ALIGNED
-            'PyArray_UpdateFlags(%(res)s, NPY_ARRAY_UPDATE_ALL)',
-            # we are making a view in both inplace and non-inplace cases
-            """
-#if NPY_API_VERSION < 0x00000007
-PyArray_BASE(%(res)s) = (PyObject*)%(basename)s;
-#else
-PyArray_SetBaseObject(%(res)s, (PyObject*)%(basename)s);
-#endif
-"""
-            '}']
-
-        full_code = statements(check_input_nd +
-                               clear_output +
-                               get_base +
-                               shape_statements +
-                               strides_statements +
-                               close_bracket)
-
-        if 0:
-            print('C_CODE')
-            print('')
-            print(self)
-            print("IN BROAD", self.input_broadcastable)
-            print("NEW ORDER", self.new_order)
-            print("SHUFFLE", self.shuffle)
-            print("AUGMENT", self.augment)
-            print('------------')
-            print('')
-            print(full_code)
-
-            if 0:
-                sys.exit()
-
-        return full_code % dict(locals(), **sub)
-
-    def c_code_cache_version(self):
-        return (3,)
-
     def grad(self, inp, grads):
         x, = inp
         gz, = grads
@@ -392,7 +299,7 @@ PyArray_SetBaseObject(%(res)s, (PyObject*)%(basename)s);
         # Do not make the DimShuffle inplace as an optimization at the
         # canonicalization optimization phase will remove the inplace.
         # The inplace will be reintroduced automatically later in the graph.
-        if 'int' in inp[0].dtype:
+        if inp[0].dtype in theano.tensor.discrete_dtypes:
             return [inp[0].zeros_like(dtype=theano.config.floatX)]
         else:
             return [DimShuffle(gz.type.broadcastable, grad_order)(
@@ -477,25 +384,21 @@ second dimension
 
     """
 
+    __props__ = ("scalar_op", "inplace_pattern")
+
     def __init__(self, scalar_op, inplace_pattern=None, name=None,
                  nfunc_spec=None, openmp=None):
         if inplace_pattern is None:
-            inplace_pattern = {}
+            inplace_pattern = frozendict({})
         self.name = name
         self.scalar_op = scalar_op
         self.inplace_pattern = inplace_pattern
-        self.destroy_map = dict((o, [i]) for o, i in inplace_pattern.items())
+        self.destroy_map = dict((o, [i]) for o, i in self.inplace_pattern.items())
 
-        self.ufunc = None
-        self.nfunc = None
         if nfunc_spec is None:
             nfunc_spec = getattr(scalar_op, 'nfunc_spec', None)
         self.nfunc_spec = nfunc_spec
-        if nfunc_spec:
-            self.nfunc = getattr(numpy, nfunc_spec[0])
-
-        # precompute the hash of this node
-        self._rehash()
+        self.__setstate__(self.__dict__)
         super(Elemwise, self).__init__(openmp=openmp)
 
     def __getstate__(self):
@@ -503,20 +406,13 @@ second dimension
         d.pop('ufunc')
         d.pop('nfunc')
         d.pop('__epydoc_asRoutine', None)
-        d.pop('_hashval')
         return d
 
     def __setstate__(self, d):
         super(Elemwise, self).__setstate__(d)
         self.ufunc = None
         self.nfunc = None
-        if getattr(self, 'nfunc_spec', None):
-            self.nfunc = getattr(numpy, self.nfunc_spec[0])
-        elif 0 < self.scalar_op.nin < 32:
-            self.ufunc = numpy.frompyfunc(self.scalar_op.impl,
-                                          self.scalar_op.nin,
-                                          self.scalar_op.nout)
-        self._rehash()
+        self.inplace_pattern = frozendict(self.inplace_pattern)
 
     def get_output_info(self, dim_shuffle, *inputs):
         """Return the outputs dtype and broadcastable pattern and the
@@ -589,26 +485,6 @@ second dimension
                                                     out_broadcastables)]
         return Apply(self, inputs, outputs)
 
-    def __eq__(self, other):
-        if type(self) == type(other):
-            items = list(self.inplace_pattern.items())
-            other_items = list(other.inplace_pattern.items())
-            items.sort()
-            other_items.sort()
-            rval = ((self.scalar_op == other.scalar_op) and
-                    (items == other_items))
-            return rval
-        return False
-
-    def _rehash(self):
-        inplace_pattern_hash = hash_from_dict(self.inplace_pattern)
-        h = hash('Elemwise') ^ hash(self.scalar_op) ^ inplace_pattern_hash
-        assert h == getattr(self, '_hashval', h)
-        self._hashval = h
-
-    def __hash__(self):
-        return self._hashval
-
     def __str__(self):
         if self.name is None:
             if self.inplace_pattern:
@@ -630,7 +506,7 @@ second dimension
             ograds = [x.zeros_like() for x in outs]
             ograds[idx] = theano.tensor.ones_like(out)
 
-            bgrads = self._bgrad(inputs, ograds)
+            bgrads = self._bgrad(inputs, outs, ograds)
             rop_out = None
 
             for jdx, (inp, eval_point) in enumerate(izip(inputs,
@@ -661,20 +537,16 @@ second dimension
 
         return [[True for output in node.outputs] for ipt in node.inputs]
 
-    def grad(self, inputs, ograds):
-
-        outs = self(*inputs)
-        if not isinstance(outs, (list, tuple)):
-            outs = [outs]
+    def L_op(self, inputs, outs, ograds):
 
         # compute grad with respect to broadcasted input
-        rval = self._bgrad(inputs, ograds)
+        rval = self._bgrad(inputs, outs, ograds)
 
         # TODO: make sure that zeros are clearly identifiable
         # to the gradient.grad method when the outputs have
         # some integer and some floating point outputs
-        if False in [str(out.type.dtype).find('int') == -1
-                     for out in outs]:
+        if any(out.type.dtype not in theano.tensor.continuous_dtypes
+               for out in outs):
             # For integer output, return value may
             # only be zero or undefined
             # We don't bother with trying to check
@@ -690,9 +562,9 @@ second dimension
                     new_rval.append(elem)
                 else:
                     elem = ipt.zeros_like()
-                    if str(elem.type.dtype).find('int') != -1:
+                    if str(elem.type.dtype) not in theano.tensor.continuous_dtypes:
                         elem = elem.astype(theano.config.floatX)
-                    assert str(elem.type.dtype).find('int') == -1
+                    assert str(elem.type.dtype) not in theano.tensor.discrete_dtypes
                     new_rval.append(elem)
             return new_rval
 
@@ -705,37 +577,21 @@ second dimension
             # we can sum over them
             # todo: only count dimensions that were effectively broadcasted
             to_sum = [j for j, bcast in enumerate(ipt.type.broadcastable)
-                      if bcast]
+                      if bcast and not outs[0].broadcastable[j]]
 
             if to_sum:
-                shuffle = []
-                j = 0
-                for bcast in ipt.type.broadcastable:
-                    if bcast == 1:
-                        shuffle.append('x')
-                    else:
-                        shuffle.append(j)
-                        j += 1
-                    # close if
-                # close for
-                sr = Sum(axis=to_sum)(rval[i])
-                sr = sr.dimshuffle(shuffle)
-                # sr = DimShuffle(sr.type.broadcastable, shuffle)(sr)
+                sr = theano.tensor.basic.sum(
+                    rval[i], axis=to_sum, keepdims=True)
                 rval[i] = sr
             # close if
         # close for
 
         return rval
 
-    def _bgrad(self, inputs, ograds):
+    def _bgrad(self, inputs, outputs, ograds):
         # returns grad, with respect to broadcasted versions of inputs
 
-        prev_setting = theano.config.compute_test_value
-
-        try:
-
-            theano.config.compute_test_value = 'off'
-
+        with change_flags(compute_test_value='off'):
             def as_scalar(t):
                 if isinstance(t.type, (NullType, DisconnectedType)):
                     return t
@@ -743,13 +599,12 @@ second dimension
 
             scalar_inputs = list(map(as_scalar, inputs))
             scalar_ograds = list(map(as_scalar, ograds))
-            scalar_igrads = self.scalar_op.grad(scalar_inputs, scalar_ograds)
+            scalar_outputs = self.scalar_op.make_node(
+                *[get_scalar_type(dtype=i.type.dtype).make_variable()
+                    for i in inputs]).outputs
+            scalar_igrads = self.scalar_op.L_op(scalar_inputs, scalar_outputs, scalar_ograds)
             for igrad in scalar_igrads:
                 assert igrad is not None, self.scalar_op
-
-        finally:
-
-            theano.config.compute_test_value = prev_setting
 
         if not isinstance(scalar_igrads, (list, tuple)):
             raise TypeError('%s.grad returned %s instead of list or tuple' %
@@ -763,6 +618,8 @@ second dimension
                 return r
             if r in scalar_inputs:
                 return inputs[scalar_inputs.index(r)]
+            if r in scalar_outputs:
+                return outputs[scalar_outputs.index(r)]
             if r in scalar_ograds:
                 return ograds[scalar_ograds.index(r)]
             node = r.owner
@@ -770,7 +627,7 @@ second dimension
                 # the gradient contains a constant, translate it as
                 # an equivalent TensorType of size 1 and proper number of
                 # dimensions
-                res = theano.tensor.constant(numpy.asarray(r.data),
+                res = theano.tensor.constant(np.asarray(r.data),
                                              dtype=r.type.dtype)
                 return DimShuffle((), ['x'] * nd)(res)
 
@@ -787,18 +644,38 @@ second dimension
 
         return ret
 
-    def prepare_node(self, node, storage_map, compute_map):
-        # Postpone the ufunc building to the last minutes
-        # NumPy ufunc support only up to 31 inputs.
-        # But our c code support more.
+    def prepare_node(self, node, storage_map, compute_map, impl):
+        # Postpone the ufunc building to the last minutes due to:
+        # - NumPy ufunc support only up to 31 inputs.
+        #   But our c code support more.
+        # - nfunc is reused for scipy and scipy is optional
+        if getattr(self, 'nfunc_spec', None) and impl != 'c':
+            self.nfunc = getattr(np, self.nfunc_spec[0], None)
+            if self.nfunc is None:
+                # Not inside NumPy. So probably another package like scipy.
+                symb = self.nfunc_spec[0].split(".")
+                for idx in range(1, len(self.nfunc_spec[0])):
+                    try:
+                        module = __import__('.'.join(symb[:idx]))
+                    except ImportError:
+                        break
+                for sub in symb[1:]:
+                    try:
+                        module = getattr(module, sub)
+                    except AttributeError:
+                        module = None
+                        break
+                self.nfunc = module
+
         if (len(node.inputs) < 32 and
                 (self.nfunc is None or
                  self.scalar_op.nin != len(node.inputs)) and
-                self.ufunc is None):
+                self.ufunc is None and
+                impl == 'py'):
 
-            ufunc = numpy.frompyfunc(self.scalar_op.impl,
-                                     len(node.inputs),
-                                     self.scalar_op.nout)
+            ufunc = np.frompyfunc(self.scalar_op.impl,
+                                  len(node.inputs),
+                                  self.scalar_op.nout)
             if self.scalar_op.nin > 0:
                 # We can reuse it for many nodes
                 self.ufunc = ufunc
@@ -817,10 +694,10 @@ second dimension
         # NumPy 1.10.1 raise an error when giving the signature
         # when the input is complex. So add it only when inputs is int.
         out_dtype = node.outputs[0].dtype
-        if (out_dtype in float_dtypes and
-                isinstance(self.nfunc, numpy.ufunc) and
-                node.inputs[0].dtype in discrete_dtypes):
-            char = numpy.sctype2char(out_dtype)
+        if (out_dtype in theano.tensor.float_dtypes and
+                isinstance(self.nfunc, np.ufunc) and
+                node.inputs[0].dtype in theano.tensor.discrete_dtypes):
+            char = np.sctype2char(out_dtype)
             sig = char * node.nin + '->' + char * node.nout
             node.tag.sig = sig
         node.tag.fake_node = Apply(
@@ -830,7 +707,7 @@ second dimension
             [get_scalar_type(dtype=output.type.dtype).make_variable()
              for output in node.outputs])
 
-        self.scalar_op.prepare_node(node.tag.fake_node, None, None)
+        self.scalar_op.prepare_node(node.tag.fake_node, None, None, impl)
 
     def perform(self, node, inputs, output_storage):
         if len(node.inputs) >= 32:
@@ -875,6 +752,10 @@ second dimension
 
         ufunc_args = inputs
         ufunc_kwargs = {}
+        # We supported in the past calling manually op.perform.
+        # To keep that support we need to sometimes call self.prepare_node
+        if self.nfunc is None and self.ufunc is None:
+            self.prepare_node(node, None, None, 'py')
         if self.nfunc and len(inputs) == self.nfunc_spec[1]:
             ufunc = self.nfunc
             nout = self.nfunc_spec[2]
@@ -890,14 +771,18 @@ second dimension
             # numpy the first (faster) version leads to segfaults
             if self.ufunc:
                 ufunc = self.ufunc
+            elif not hasattr(node.tag, 'ufunc'):
+                # It happen that make_thunk isn't called, like in
+                # get_scalar_constant_value
+                self.prepare_node(node, None, None, 'py')
+                # prepare_node will add ufunc to self or the tag
+                # depending if we can reuse it or not. So we need to
+                # test both again.
+                if self.ufunc:
+                    ufunc = self.ufunc
+                else:
+                    ufunc = node.tag.ufunc
             else:
-                if not hasattr(node.tag, 'ufunc'):
-                    # It happen that make_thunk isn't called, like in
-                    # get_scalar_constant_value
-                    node.tag.ufunc = numpy.frompyfunc(self.scalar_op.impl,
-                                                      len(node.inputs),
-                                                      self.scalar_op.nout)
-
                 ufunc = node.tag.ufunc
 
             nout = ufunc.nout
@@ -912,7 +797,7 @@ second dimension
             if getattr(variable, "dtype", "") == 'object':
                 # Since numpy 1.6, function created with numpy.frompyfunc
                 # always return an ndarray with dtype object
-                variable = numpy.asarray(variable, dtype=nout.dtype)
+                variable = np.asarray(variable, dtype=nout.dtype)
 
             if i in self.inplace_pattern:
                 odat = inputs[self.inplace_pattern[i]]
@@ -921,15 +806,15 @@ second dimension
             # Sometimes NumPy return a Python type.
             # Some Theano op return a different dtype like floor, ceil,
             # trunc, eq, ...
-            elif (not isinstance(variable, numpy.ndarray) or
+            elif (not isinstance(variable, np.ndarray) or
                   variable.dtype != nout.dtype):
-                variable = numpy.asarray(variable, nout.dtype)
+                variable = np.asarray(variable, nout.dtype)
                 # The next line is needed for numpy 1.9. Otherwise
                 # there are tests that fail in DebugMode.
                 # Normally we would call theano.misc._asarray, but it
                 # is faster to inline the code. We know that the dtype
                 # are the same string, just different typenum.
-                if numpy.dtype(nout.dtype).num != variable.dtype.num:
+                if np.dtype(nout.dtype).num != variable.dtype.num:
                     variable = variable.view(dtype=nout.dtype)
                 storage[0] = variable
             # numpy.real return a view!
@@ -977,7 +862,7 @@ second dimension
         # To not request all of them to call prepare_node(), do it here.
         # There is no harm if it get called multile time.
         if not hasattr(node.tag, 'fake_node'):
-            self.prepare_node(node, None, None)
+            self.prepare_node(node, None, None, 'c')
         _inames = inames
         _onames = onames
 
@@ -1071,7 +956,7 @@ second dimension
 
         # We loop over the "aliased" outputs, i.e., those that are
         # inplace (overwrite the contents of one of the inputs) and
-        # make the output pointers point to theur corresponding input
+        # make the output pointers point to their corresponding input
         # pointers.
         for output, oname in izip(aliased_outputs, aliased_onames):
             olv_index = inputs.index(dmap[output][0])
@@ -1087,20 +972,26 @@ second dimension
             Py_XINCREF(%(oname)s);
             """ % locals()
             # We alias the scalar variables
-            defines += "#define %(oname)s_i %(iname)s_i" % locals()
-            undefs += "#undef %(oname)s_i" % locals()
+            defines += "#define %(oname)s_i %(iname)s_i\n" % locals()
+            undefs += "#undef %(oname)s_i\n" % locals()
 
         # Note: here, olv_index is either the index of the last output
         # which is allocated, OR, if there are any aliased outputs,
         # the index of the last of these aliased outputs.
 
         # We generate the C code of the inner loop using the scalar op
+        if self.openmp:
+            # If we are using openmp, we need to get rid of the "goto"
+            # statement in sub['fail']. For now we recreate it here.
+            fail = gof.cc.failure_code(sub, use_goto=False)
+        else:
+            fail = sub['fail']
         task_code = self.scalar_op.c_code(
             node.tag.fake_node,
             nodename + '_scalar_',
             ["%s_i" % s for s in _inames],
             ["%s_i" % s for s in onames],
-            sub)
+            dict(sub, fail=fail))
         code = """
         {
             %(defines)s
@@ -1258,7 +1149,7 @@ second dimension
         return support_code
 
     def c_code_cache_version_apply(self, node):
-        version = [12]  # the version corresponding to the c code in this Op
+        version = [13]  # the version corresponding to the c code in this Op
 
         # now we insert versions for the ops on which we depend...
         scalar_node = Apply(
@@ -1282,7 +1173,8 @@ second dimension
         Return True if we do not want to compile c code
         when doing constant folding of this node.
         """
-        return node.outputs[0].ndim == 0
+        # The python code don't support 32 inputs or more.
+        return node.outputs[0].ndim == 0 and len(node.inputs) < 32
 
 
 ################
@@ -1333,6 +1225,8 @@ class CAReduce(Op):
 
     """
 
+    __props__ = ("scalar_op", "axis")
+
     def __init__(self, scalar_op, axis=None):
         if scalar_op.nin not in [-1, 2] or scalar_op.nout != 1:
             raise NotImplementedError((
@@ -1345,9 +1239,9 @@ class CAReduce(Op):
         # There is a bug in numpy that results in isinstance(x,
         # integer_types) returning False for numpy integers.  See
         # <http://projects.scipy.org/numpy/ticket/2235>.
-        elif isinstance(axis, (integer_types, numpy.integer)):
+        elif isinstance(axis, (integer_types, np.integer)):
             self.axis = (axis,)
-        elif isinstance(axis, numpy.ndarray) and axis.ndim == 0:
+        elif isinstance(axis, np.ndarray) and axis.ndim == 0:
             self.axis = (int(axis),)
         else:
             self.axis = list(set(int(a) for a in axis))
@@ -1359,21 +1253,26 @@ class CAReduce(Op):
     def set_ufunc(self, scalar_op):
         # This is probably a speed up of the implementation
         if isinstance(scalar_op, theano.scalar.basic.Add):
-            self.ufunc = numpy.add
+            self.ufunc = np.add
         elif isinstance(scalar_op, theano.scalar.basic.Mul):
-            self.ufunc = numpy.multiply
+            self.ufunc = np.multiply
         elif isinstance(scalar_op, theano.scalar.basic.Maximum):
-            self.ufunc = numpy.maximum
+            self.ufunc = np.maximum
         elif isinstance(scalar_op, theano.scalar.basic.Minimum):
-            self.ufunc = numpy.minimum
-        elif isinstance(scalar_op, theano.scalar.basic.AND):
-            self.ufunc = numpy.bitwise_and
+            self.ufunc = np.minimum
+        elif (isinstance(scalar_op, theano.scalar.basic.AND) and
+                _numpy_ver >= [1, 12]):
+            # numpy.bitwise_and.identity was incorrect for versions before
+            # 1.12 (it was 1 instead of -1), so we skip it in that case.
+            # We will fall back to the "else:" case, which defines a
+            # ufunc without identity.
+            self.ufunc = np.bitwise_and
         elif isinstance(scalar_op, theano.scalar.basic.OR):
-            self.ufunc = numpy.bitwise_or
+            self.ufunc = np.bitwise_or
         elif isinstance(scalar_op, theano.scalar.basic.XOR):
-            self.ufunc = numpy.bitwise_xor
+            self.ufunc = np.bitwise_xor
         else:
-            self.ufunc = numpy.frompyfunc(scalar_op.impl, 2, 1)
+            self.ufunc = np.frompyfunc(scalar_op.impl, 2, 1)
 
     def _output_dtype(self, input_dtype):
         return input_dtype
@@ -1401,8 +1300,8 @@ class CAReduce(Op):
                     axis2.append(a)
             assert len(axis) == len(axis2)
             axis = tuple(axis2)
-            # We can't call self.__class__() as there is class that
-            # inherit from CAReduce that don't have the same signature
+            # We can't call self.__class__() as there is a class that
+            # inherits from CAReduce that doesn't have the same signature
             op = copy(self)
             op.set_ufunc(op.scalar_op)
             op.axis = axis
@@ -1422,17 +1321,6 @@ class CAReduce(Op):
     def __setstate__(self, d):
         self.__dict__.update(d)
         self.set_ufunc(self.scalar_op)
-
-    def __eq__(self, other):
-        return (type(self) == type(other) and
-                self.scalar_op == other.scalar_op and
-                self.axis == other.axis)
-
-    def __hash__(self):
-        if self.axis is None:
-            return hash(self.scalar_op)
-        else:
-            return hash(self.scalar_op) ^ hash(tuple(self.axis))
 
     def __str__(self):
         if self.axis is not None:
@@ -1457,15 +1345,15 @@ class CAReduce(Op):
 
         if to_reduce:
             for dimension in to_reduce:
-                # If it's a zero-size array, use scalar_op.identity
+                # If it's a zero-sized array, use scalar_op.identity
                 # if available
                 if variable.shape[dimension] == 0:
                     if hasattr(self.scalar_op, 'identity'):
                         # Compute the shape of the output
                         v_shape = list(variable.shape)
                         del v_shape[dimension]
-                        variable = numpy.empty(tuple(v_shape),
-                                               dtype=acc_dtype)
+                        variable = np.empty(tuple(v_shape),
+                                            dtype=acc_dtype)
                         variable.fill(self.scalar_op.identity)
                     else:
                         raise ValueError((
@@ -1473,21 +1361,11 @@ class CAReduce(Op):
                             "self.scalar_op (%s) has no attribute 'identity'"
                             % (variable, dimension, self.scalar_op)))
                 else:
-                    # Numpy 1.6 has a bug where you sometimes have to specify
-                    # "dtype='object'" in reduce for it to work, if the ufunc
-                    # was built with "frompyfunc". We need to find out if we
-                    # are in one of these cases (only "object" is supported in
-                    # the output).
-                    if ((self.ufunc.ntypes == 1) and
-                            (self.ufunc.types[0][-1] == 'O')):
-                        variable = self.ufunc.reduce(variable, dimension,
-                                                     dtype='object')
-                    else:
-                        variable = self.ufunc.reduce(variable, dimension,
-                                                     dtype=acc_dtype)
+                    variable = self.ufunc.reduce(variable, dimension,
+                                                 dtype=acc_dtype)
 
-            variable = numpy.asarray(variable)
-            if numpy.may_share_memory(variable, input):
+            variable = np.asarray(variable)
+            if np.may_share_memory(variable, input):
                 # perhaps numpy is clever for reductions of size 1?
                 # We don't want this.
                 variable = variable.copy()
@@ -1495,8 +1373,8 @@ class CAReduce(Op):
                                         dtype=node.outputs[0].type.dtype)
         else:
             # Force a copy
-            output[0] = numpy.array(variable, copy=True,
-                                    dtype=node.outputs[0].type.dtype)
+            output[0] = np.array(variable, copy=True,
+                                 dtype=node.outputs[0].type.dtype)
 
     def infer_shape(self, node, shapes):
         ishape, = shapes
@@ -1598,8 +1476,8 @@ class CAReduce(Op):
                 scal_name = 'maximum'
                 if input.type.dtype in ["float32", "float64"]:
                     identity = "-__builtin_inf()"
-                elif input.type.dtype.startswith("uint"):
-                    # numpy1.5.1 don't define NPY_MIN_UINT*
+                elif input.type.dtype.startswith("uint") or input.type.dtype == 'bool':
+                    # numpy does not define NPY_MIN_UINT* and NPY_MIN_BOOL
                     identity = "0"
                 else:
                     identity = "NPY_MIN_" + str(input.type.dtype).upper()
@@ -1607,6 +1485,9 @@ class CAReduce(Op):
                 scal_name = 'minimum'
                 if input.type.dtype in ["float32", "float64"]:
                     identity = "__builtin_inf()"
+                elif input.type.dtype == 'bool':
+                    # numpy does not define NPY_MAX_BOOL
+                    identity = "1"
                 else:
                     identity = "NPY_MAX_" + str(input.type.dtype).upper()
             fail = sub["fail"]
@@ -1619,14 +1500,14 @@ class CAReduce(Op):
             pattern_ = str(pattern)[1:-1]
             decl += """int tosum[]={%(pattern_)s};""" % locals()
             alloc += """
-for(int i=0;i<PyArray_NDIM(%(iname)s);i++){
-  if(PyArray_DIMS(%(iname)s)[i]==0 && tosum[i]){
-    PyErr_Format(PyExc_ValueError,
-         "Input of CAReduce{%(scal_name)s} has zero-size on axis %%d",i);
-    %(fail)s;
-  }
-}
-                   """ % locals()
+                    for(int i=0;i<PyArray_NDIM(%(iname)s);i++){
+                        if(PyArray_DIMS(%(iname)s)[i]==0 && tosum[i]){
+                            PyErr_Format(PyExc_ValueError,
+                                "Input of CAReduce{%(scal_name)s} has zero-size on axis %%d",i);
+                            %(fail)s;
+                        }
+                    }
+                    """ % locals()
         else:
             raise TypeError(
                 "The CAReduce.scalar_op must have an identity field.")
@@ -1640,10 +1521,10 @@ for(int i=0;i<PyArray_NDIM(%(iname)s);i++){
 
         task1_code = self.scalar_op.c_code(
             Apply(self.scalar_op,
-                  [get_scalar_type(dtype=input.type.dtype).make_variable()
-                   for input in (node.inputs * 2)],
-                  [get_scalar_type(dtype=output.type.dtype).make_variable()
-                   for input in node.outputs]),
+                  [get_scalar_type(dtype=iv.type.dtype).make_variable()
+                   for iv in (node.inputs * 2)],
+                  [get_scalar_type(dtype=ov.type.dtype).make_variable()
+                   for ov in node.outputs]),
             None,
             ["%s_i" % aname, "%s_i" % inames[0]],
             ["%s_i" % aname],
@@ -1687,7 +1568,8 @@ for(int i=0;i<PyArray_NDIM(%(iname)s);i++){
         return ['<vector>', '<algorithm>']
 
     def c_code_cache_version_apply(self, node):
-        version = (6,)  # the version corresponding to the c code in this Op
+        # the version corresponding to the c code in this Op
+        version = [8]
 
         # now we insert versions for the ops on which we depend...
         scalar_node = Apply(
@@ -1707,18 +1589,17 @@ for(int i=0;i<PyArray_NDIM(%(iname)s);i++){
 
 
 class All(CAReduce):
-    """ Applies `bitwise and` to all the values of a tensor along the
+    """ Applies `logical and` to all the values of a tensor along the
     specified axis(es).
 
-    Equivalent to `CAReduce(scalar.and\_, axis=axis)`.
-
     """
+    __props__ = ("axis",)
 
     def __init__(self, axis=None):
         CAReduce.__init__(self, scalar.and_, axis)
 
     def _output_dtype(self, idtype):
-        return "int8"
+        return "bool"
 
     def __str__(self):
         if self.axis is None:
@@ -1728,7 +1609,7 @@ class All(CAReduce):
 
     def make_node(self, input):
         input = as_tensor_variable(input)
-        if input.dtype not in ["int8", "uint8"]:
+        if input.dtype != "bool":
             input = theano.tensor.neq(input, 0)
         ret = super(All, self).make_node(input)
         return ret
@@ -1742,15 +1623,14 @@ class Any(CAReduce):
     """ Applies `bitwise or` to all the values of a tensor along the
     specified axis(es).
 
-    Equivalent to `CAReduce(scalar.or\_, axis=axis)`.
-
     """
+    __props__ = ("axis", )
 
     def __init__(self, axis=None):
         CAReduce.__init__(self, scalar.or_, axis)
 
     def _output_dtype(self, idtype):
-        return "int8"
+        return "bool"
 
     def __str__(self):
         if self.axis is None:
@@ -1760,7 +1640,7 @@ class Any(CAReduce):
 
     def make_node(self, input):
         input = as_tensor_variable(input)
-        if input.dtype not in ["int8", "uint8"]:
+        if input.dtype != "bool":
             input = theano.tensor.neq(input, 0)
         ret = super(Any, self).make_node(input)
         return ret
@@ -1822,19 +1702,12 @@ class CAReduceDtype(CAReduce):
         * for complex dtypes, we use at least complex128.
 
     """
+    __props__ = ("scalar_op", "axis", "dtype", "acc_dtype")
 
     def __init__(self, scalar_op, axis=None, dtype=None, acc_dtype=None):
         CAReduce.__init__(self, scalar_op, axis=axis)
         self.dtype = dtype
         self.acc_dtype = acc_dtype
-
-    def __eq__(self, other):
-        return (CAReduce.__eq__(self, other) and
-                self.dtype == other.dtype and
-                self.acc_dtype == other.acc_dtype)
-
-    def __hash__(self):
-        return CAReduce.__hash__(self) ^ hash((self.dtype, self.acc_dtype))
 
     def __setstate__(self, d):
         super(CAReduceDtype, self).__setstate__(d)
@@ -1862,6 +1735,7 @@ class CAReduceDtype(CAReduce):
         if dtype is None:
             # If input has a discrete dtype, upcast it to 64
             return dict(
+                bool='int64',
                 int8='int64',
                 int16='int64',
                 int32='int64',
@@ -1877,6 +1751,7 @@ class CAReduceDtype(CAReduce):
         acc_dtype = self.acc_dtype
         if acc_dtype is None:
             return dict(
+                bool='int64',
                 int8='int64',
                 int16='int64',
                 int32='int64',
@@ -1980,16 +1855,28 @@ class Sum(CAReduceDtype):
 
     """
 
+    __props__ = ("axis", "dtype", "acc_dtype")
+
     def __init__(self, axis=None, dtype=None, acc_dtype=None):
         CAReduceDtype.__init__(self, scalar.add, axis=axis,
                                dtype=dtype, acc_dtype=acc_dtype)
 
-    def grad(self, inp, grads):
+    def __str__(self):
+        name = self.__class__.__name__
+        axis = ""
+        if self.axis is not None:
+            axis = ", ".join(str(x) for x in self.axis)
+            axis = "axis=[%s], " % axis
+        return "%s{%sacc_dtype=%s}" % (
+            name,
+            axis,
+            str(self.acc_dtype)
+        )
+
+    def L_op(self, inp, out, grads):
         x, = inp
 
-        out = self(*inp)
-
-        if out.dtype.find('int') != -1:
+        if out[0].dtype not in theano.tensor.continuous_dtypes:
             return [x.zeros_like(dtype=theano.config.floatX)]
 
         gz, = grads
@@ -2028,6 +1915,7 @@ class Prod(CAReduceDtype):
     input.
 
     """
+    __props__ = ("axis", "dtype", "acc_dtype")
 
     def __init__(self, axis=None, dtype=None, acc_dtype=None,
                  no_zeros_in_input=False):
@@ -2041,15 +1929,7 @@ class Prod(CAReduceDtype):
         if 'no_zeros_in_input' not in dct:
             self.no_zeros_in_input = False
 
-    def __eq__(self, other):
-        return (CAReduceDtype.__eq__(self, other) and
-                self.no_zeros_in_input == other.no_zeros_in_input)
-
-    def __hash__(self):
-        return (CAReduceDtype.__hash__(self) ^
-                hash(self.no_zeros_in_input))
-
-    def grad(self, inp, grads):
+    def L_op(self, inp, out, grads):
         """
         The grad of this Op could be very easy, if it is was not for the case
         where zeros are present in a given "group" (ie. elements reduced
@@ -2098,10 +1978,8 @@ class Prod(CAReduceDtype):
         prod_in, = inp
         gz, = grads
 
-        out = self(*inp)
-
-        if (out.dtype in discrete_dtypes or
-                self.acc_dtype in discrete_dtypes):
+        if (out[0].dtype in theano.tensor.discrete_dtypes or
+                self.acc_dtype in theano.tensor.discrete_dtypes):
             # There is an int conversion in the way
             return [prod_in.zeros_like(dtype=theano.config.floatX)]
 
@@ -2179,7 +2057,7 @@ class Prod(CAReduceDtype):
 
 class MulWithoutZeros(scalar.BinaryScalarOp):
     # "identity" here is zero, as in Reduce we don't want to start
-    # with reducing (1, something_else): this leads to the erronous
+    # with reducing (1, something_else): this leads to the erroneous
     # case where a vector of zeros is reduced by binary reductions
     # of (1, 0), which always ends up as 1 (ie. the result for
     # the c version, for the product of [0,0,0], is 1.0)
@@ -2210,6 +2088,9 @@ mul_without_zeros = MulWithoutZeros(scalar.upcast_out,
 
 
 class ProdWithoutZeros(CAReduceDtype):
+
+    __props__ = ("axis", "dtype", "acc_dtype")
+
     def __init__(self, axis=None, dtype=None, acc_dtype=None):
         CAReduceDtype.__init__(self, mul_without_zeros, axis=axis,
                                dtype=dtype, acc_dtype=acc_dtype)
@@ -2219,6 +2100,6 @@ class ProdWithoutZeros(CAReduceDtype):
         a_grad = theano.gradient.grad_not_implemented(
             self, 0, a,
             "2nd derivatives of `product(a)` is not currently supported."
-            "If `a` is guarenteed to contains no zeros, use "
+            "If `a` is guaranteed to contains no zeros, use "
             "`product(a, no_zeros_in_input=True)`.")
         return [a_grad]

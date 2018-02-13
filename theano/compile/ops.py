@@ -17,7 +17,7 @@ from six import iteritems, integer_types
 from six.moves import xrange
 
 
-import numpy
+import numpy as np
 
 
 def register_view_op_c_code(type, code, version=()):
@@ -50,6 +50,7 @@ class ViewOp(gof.Op):
     # the output variable is %(oname)s.
     c_code_and_version = {}
     __props__ = ()
+    _f16_ok = True
 
     def make_node(self, x):
         return gof.Apply(self, [x], [x.type()])
@@ -151,6 +152,7 @@ class DeepCopyOp(gof.Op):
 
     check_input = False
     __props__ = ()
+    _f16_ok = True
 
     def __init__(self):
         pass
@@ -338,11 +340,23 @@ class Shape_i(gof.Op):
     def __init__(self, i):
         # As i will be used in the hash and that ndarray are not hashable,
         # we need to convert it to an int as it is hashable.
-        if isinstance(i, numpy.ndarray):
-            assert "int" in str(i.dtype)
+        if isinstance(i, np.ndarray):
+            assert i.dtype in theano.tensor.integer_dtypes
         assert i == int(i)
         i = int(i)
         self.i = i
+
+    # NB:
+    # 1) params_type is defined as a property to avoid
+    #    loop in Python import caused by importing theano.scalar below
+    #    when params_type is defined directly in class code.
+    # 2) We wrap scalar into ParamsType (instead of directly using scalar as op param)
+    #    to avoid Theano converting scalar param to constant that would be later
+    #    hardcoded as litteral in C code, making us loose all the advantages of
+    #    using params.
+    @property
+    def params_type(self):
+        return gof.ParamsType(i=theano.scalar.basic.int64)
 
     def __str__(self):
         return '%s{%i}' % (self.__class__.__name__, self.i)
@@ -358,7 +372,7 @@ class Shape_i(gof.Op):
                             (x, self.i))
         return theano.Apply(self, [x], [theano.tensor.lscalar()])
 
-    def perform(self, node, inp, out_):
+    def perform(self, node, inp, out_, params):
         x, = inp
         out, = out_
         if out[0] is None:
@@ -381,7 +395,7 @@ class Shape_i(gof.Op):
             version.append((str(t), v))
 
         if version:
-            version.append(1)
+            version.append(2)
 
         return tuple(version)
 
@@ -389,7 +403,8 @@ class Shape_i(gof.Op):
         iname, = inames
         oname, = onames
         fail = sub['fail']
-        i = self.i
+        # i is then 'params->i', not just 'params'.
+        i = sub['params'] + '->i'
 
         itype = node.inputs[0].type.__class__
         if itype in self.c_code_and_version:
@@ -450,7 +465,7 @@ def shape_i(var, i, fgraph=None):
                     if inp.owner:
                         recur(inp.owner)
                 # If the output var isn't marked as being in the graph,
-                # we need to att it in the ShapeFeature.
+                # we need to add it in the ShapeFeature.
                 shape_feature.on_import(fgraph, node,
                                         'gof.ops.shape_i')
         if var not in shape_of:
@@ -659,17 +674,18 @@ class Rebroadcast(gof.Op):
 
     check_input = False
     __props__ = ("axis",)
+    _f16_ok = True
 
     def __init__(self, *axis):
         # Sort them to make sure we merge all possible case.
         items = sorted(axis)
         self.axis = OrderedDict(items)
         for axis, broad in iteritems(self.axis):
-            if not isinstance(axis, (numpy.integer, integer_types)):
+            if not isinstance(axis, (np.integer, integer_types)):
                 raise TypeError("Rebroadcast needs integer axes. "
                                 "Got {}".format(axis))
 
-            if not isinstance(broad, (numpy.bool_, bool)):
+            if not isinstance(broad, (np.bool_, bool)):
                 raise TypeError("Rebroadcast needs bool for new broadcast "
                                 "pattern. Got {}".format(broad))
 
@@ -810,7 +826,7 @@ class SpecifyShape(gof.Op):
 
     We currently don't support specifying partial shape information.
 
-    TODO : test this op with sparse and cuda ndarray. Do C code for them too.
+    TODO : test this op with sparse. Do C code for them too.
 
     """
 
@@ -820,13 +836,14 @@ class SpecifyShape(gof.Op):
     # the output variable is %(oname)s.
     c_code_and_version = {}
     __props__ = ()
+    _f16_ok = True
 
     def make_node(self, x, shape):
         if not isinstance(x, gof.Variable):
             x = theano.tensor.as_tensor_variable(x)
         shape = theano.tensor.as_tensor_variable(shape)
         assert shape.ndim == 1
-        assert "int" in shape.dtype
+        assert shape.dtype in theano.tensor.integer_dtypes
         if isinstance(shape, theano.tensor.TensorConstant):
             assert shape.data.size == x.ndim
         return gof.Apply(self, [x, shape], [x.type()])
@@ -835,8 +852,8 @@ class SpecifyShape(gof.Op):
         x, shape = inp
         out, = out_
         assert x.ndim == shape.size
-        assert numpy.all(x.shape == shape), ("got shape", x.shape,
-                                             "expected", shape)
+        assert np.all(x.shape == shape), ("got shape", x.shape,
+                                          "expected", shape)
         out[0] = x
 
     def infer_shape(self, node, shapes):

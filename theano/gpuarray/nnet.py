@@ -1,8 +1,7 @@
 from __future__ import absolute_import, print_function, division
-import os
-import numpy
+import numpy as np
 
-from theano import Op, Apply, config
+from theano import Op, Apply
 from six import StringIO
 
 try:
@@ -11,12 +10,9 @@ try:
 except ImportError:
     pass
 
-from .basic_ops import (as_gpuarray_variable, GpuKernelBase, Kernel,
+from .basic_ops import (as_gpuarray_variable, GpuKernelBase, Kernel, gpuarray_helper_inc_dir,
                         infer_context_name)
 from .type import GpuArrayType
-from .kernel_codegen import (nvcc_kernel,
-                             inline_softmax,
-                             inline_softmax_fixed_shared)
 from .fp16_help import work_dtype, load_w, write_w
 
 
@@ -42,14 +38,11 @@ class GpuCrossentropySoftmaxArgmax1HotWithBias(GpuKernelBase, Op):
         am = y_idx.type()
         return Apply(self, [x, b, y_idx], [nll, sm, am])
 
-    def get_params(self, node):
-        return node.inputs[0].type.context
-
     def c_headers(self):
         return ['<numpy_compat.h>', '<gpuarray/types.h>', 'gpuarray_helper.h']
 
     def c_header_dirs(self):
-        return [os.path.dirname(__file__)]
+        return [gpuarray_helper_inc_dir()]
 
     def gpu_kernels(self, node, nodename):
         dtype_x = node.inputs[0].dtype
@@ -68,105 +61,94 @@ class GpuCrossentropySoftmaxArgmax1HotWithBias(GpuKernelBase, Op):
         type_y_idx = gpuarray.dtype_to_ctype(dtype_y_idx)
         kname = "k_xent_sm_1hot_bias"
         k_var = "k_xent_sm_1hot_bias_" + nodename
-        f = '' if dtype_x == 'float64' else 'f'
+        if node.inputs[0].type.context.kind != b'cuda':
+            f = ''
+        else:
+            f = '' if dtype_x == 'float64' else 'f'
+        params = [
+            gpuarray.SIZE, gpuarray.SIZE,
+            gpuarray.GpuArray, gpuarray.SIZE, gpuarray.SSIZE, gpuarray.SSIZE,
+            gpuarray.GpuArray, gpuarray.SIZE, gpuarray.SSIZE,
+            gpuarray.GpuArray, gpuarray.SIZE, gpuarray.SSIZE,
+            gpuarray.GpuArray, gpuarray.SIZE, gpuarray.SSIZE,
+            gpuarray.GpuArray, gpuarray.SIZE, gpuarray.SSIZE, gpuarray.SSIZE,
+            gpuarray.GpuArray, gpuarray.SIZE, gpuarray.SSIZE
+        ]
         sio = StringIO()
-        print("""
+        print("""#include "cluda.h"
+
         KERNEL void %(kname)s(const ga_size M, const ga_size N,
-            const %(type_x)s* x_data, const ga_size offset_x,
-            const ga_ssize xs0, const ga_ssize xs1,
-            const %(type_b)s* b, const ga_size offset_b,
-            const ga_ssize bs0,
-            const %(type_y_idx)s* y_idx_data, const ga_size offset_y_idx,
-            const ga_ssize y_idxs0,
-            %(type_x)s* nll_data, const ga_size offset_nll,
-            const ga_ssize nlls0,
-            %(type_x)s* sm_data, const ga_size offset_sm,
-            const ga_ssize sms0, const ga_ssize sms1,
-            %(type_y_idx)s* am_data, const ga_size offset_am,
-            const ga_ssize ams0)
+            GLOBAL_MEM const %(type_x)s* x_data, const ga_size offset_x, const ga_ssize xs0, const ga_ssize xs1,
+            GLOBAL_MEM const %(type_b)s* b, const ga_size offset_b, const ga_ssize bs0,
+            GLOBAL_MEM const %(type_y_idx)s* y_idx_data, const ga_size offset_y_idx, const ga_ssize y_idxs0,
+            GLOBAL_MEM %(type_x)s* nll_data, const ga_size offset_nll, const ga_ssize nlls0,
+            GLOBAL_MEM %(type_x)s* sm_data, const ga_size offset_sm, const ga_ssize sms0, const ga_ssize sms1,
+            GLOBAL_MEM %(type_y_idx)s* am_data, const ga_size offset_am, const ga_ssize ams0 GA_DECL_SHARED_PARAM(%(work_x)s, per_thread_values))
         {
-          x_data = (const %(type_x)s *)(((char *)x_data)+offset_x);
-          b = (const %(type_b)s *)(((char *)b)+offset_b);
-          y_idx_data = (const %(type_y_idx)s *)(((char *)y_idx_data)+offset_y_idx);
-          nll_data = (%(type_x)s *)(((char *)nll_data)+offset_nll);
-          sm_data = (%(type_x)s *)(((char *)sm_data)+offset_sm);
-          am_data = (%(type_y_idx)s *)(((char *)am_data)+offset_am);
-
-          for (int row = blockIdx.x; row < M; row += gridDim.x){
-
-            const %(type_x)s* x = x_data + xs0 * row;
-            %(type_x)s* sm = sm_data + sms0 * row;
-
-            extern LOCAL_MEM %(work_x)s per_thread_values[];
+          x_data = (GLOBAL_MEM const %(type_x)s *)(((GLOBAL_MEM char *)x_data)+offset_x);
+          b = (GLOBAL_MEM const %(type_b)s *)(((GLOBAL_MEM char *)b)+offset_b);
+          y_idx_data = (GLOBAL_MEM const %(type_y_idx)s *)(((GLOBAL_MEM char *)y_idx_data)+offset_y_idx);
+          nll_data = (GLOBAL_MEM %(type_x)s *)(((GLOBAL_MEM char *)nll_data)+offset_nll);
+          sm_data = (GLOBAL_MEM %(type_x)s *)(((GLOBAL_MEM char *)sm_data)+offset_sm);
+          am_data = (GLOBAL_MEM %(type_y_idx)s *)(((GLOBAL_MEM char *)am_data)+offset_am);
+          for (ga_int row = GID_0; row < M; row += GDIM_0){
+            GLOBAL_MEM const %(type_x)s* x = x_data + xs0 * row;
+            GLOBAL_MEM %(type_x)s* sm = sm_data + sms0 * row;
+            GA_DECL_SHARED_BODY(%(work_x)s, per_thread_values);
             LOCAL_MEM %(work_x)s row_max, sum, sum_inv;
-            LOCAL_MEM int row_max_threadIdx;
-
+            LOCAL_MEM ga_int row_max_threadIdx;
             %(work_x)s per_thread_row_max, per_thread_sum;
-            int per_thread_row_max_j;
-
+            ga_int per_thread_row_max_j;
             // COMPUTE ROW MAX AND ARGMAX
-
             // compute separate per-thread maximums and argmaxes
             per_thread_row_max = NAN;
             per_thread_row_max_j = 0;
-
-            for (int j = threadIdx.x; j < N; j += blockDim.x)
+            for (ga_int j = LID_0; j < N; j += LDIM_0)
             {
               %(work_x)s row_ij = %(load_x)s(x[j * xs1]) + %(load_b)s(b[j * bs0]);
               per_thread_row_max_j = (row_ij > per_thread_row_max) ? j : per_thread_row_max_j;
               per_thread_row_max = fmax%(f)s(row_ij, per_thread_row_max);
             }
-            per_thread_values[threadIdx.x] = per_thread_row_max;
-
+            per_thread_values[LID_0] = per_thread_row_max;
             local_barrier();
-
-            if (threadIdx.x == 0) {
+            if (LID_0 == 0) {
               row_max = NAN;
               row_max_threadIdx = 0;
-              for (int j = 0; j < blockDim.x; j++)
+              for (ga_int j = 0; j < LDIM_0; j++)
               {
                 %(work_x)s per_thread_max = per_thread_values[j];
                 row_max_threadIdx = (per_thread_max > row_max) ? j : row_max_threadIdx;
                 row_max = fmax%(f)s(per_thread_max, row_max);
               }
             }
-
             local_barrier();
-
-            // The thread with the higest max writes out which of its
+            // The thread with the highest max writes out which of its
             // values was the winner.
-            if (threadIdx.x == row_max_threadIdx) am_data[row * ams0] = per_thread_row_max_j;
-
+            if (LID_0 == row_max_threadIdx) am_data[row * ams0] = per_thread_row_max_j;
             // COMPUTE SOFTMAX
             per_thread_sum = 0.0;
-            for (int j = threadIdx.x; j < N; j += blockDim.x)
+            for (ga_int j = LID_0; j < N; j += LDIM_0)
             {
               %(work_x)s row_ij = %(load_x)s(x[j * xs1]) + %(load_b)s(b[j * bs0]);
               %(work_x)s sm_ij = exp%(f)s(row_ij - row_max);
               per_thread_sum += sm_ij;
               sm[j * sms1] = %(write_x)s(sm_ij);
             }
-
-            per_thread_values[threadIdx.x] = per_thread_sum;
-
+            per_thread_values[LID_0] = per_thread_sum;
             local_barrier();
-
-            if (threadIdx.x == 0) {
+            if (LID_0 == 0) {
               sum = 0.0;
-              for (int j = 0; j < blockDim.x; j++) {
+              for (ga_int j = 0; j < LDIM_0; j++) {
                 sum += per_thread_values[j];
               }
               sum_inv = 1.0 / sum;
             }
-
             local_barrier();
-
-            for (int j = threadIdx.x; j < N; j += blockDim.x) {
+            for (ga_int j = LID_0; j < N; j += LDIM_0) {
               sm[j * sms1] = %(write_x)s(%(load_x)s(sm[j * sms1]) * sum_inv);
             }
-
-            if (threadIdx.x == 0) {
-              const %(type_y_idx)s y_idx = (int)y_idx_data[row * y_idxs0];
+            if (LID_0 == 0) {
+              const %(type_y_idx)s y_idx = (ga_int)y_idx_data[row * y_idxs0];
               if ((y_idx >= N || y_idx < 0)) {
                 // raise some suspicion.
                 nll_data[row * nlls0] = %(write_x)s(0.0);
@@ -180,28 +162,18 @@ class GpuCrossentropySoftmaxArgmax1HotWithBias(GpuKernelBase, Op):
           }
         }
         """ % locals(), file=sio)
-        params = [
-            'uintp', 'uintp',
-            gpuarray.GpuArray, 'uintp', 'intp', 'intp',
-            gpuarray.GpuArray, 'uintp', 'intp',
-            gpuarray.GpuArray, 'uintp', 'intp',
-            gpuarray.GpuArray, 'uintp', 'intp',
-            gpuarray.GpuArray, 'uintp', 'intp', 'intp',
-            gpuarray.GpuArray, 'uintp', 'intp'
-            ]
+
         return [Kernel(code=sio.getvalue(), name=kname, params=params,
                        flags=flags, objvar=k_var)]
 
     def c_code(self, node, nodename, inp, out, sub):
-        if node.inputs[0].type.context.kind != b'cuda':
-            raise NotImplementedError('cuda only')
-        itemsize_x = numpy.dtype(node.inputs[0].dtype).itemsize
-        worksize_x = numpy.dtype(work_dtype(node.inputs[0].dtype)).itemsize
-        itemsize_b = numpy.dtype(node.inputs[1].dtype).itemsize
-        itemsize_y_idx = numpy.dtype(node.inputs[2].dtype).itemsize
-        itemsize_nll = numpy.dtype(node.outputs[0].dtype).itemsize
-        itemsize_sm = numpy.dtype(node.outputs[1].dtype).itemsize
-        itemsize_am = numpy.dtype(node.outputs[2].dtype).itemsize
+        itemsize_x = np.dtype(node.inputs[0].dtype).itemsize
+        worksize_x = np.dtype(work_dtype(node.inputs[0].dtype)).itemsize
+        itemsize_b = np.dtype(node.inputs[1].dtype).itemsize
+        itemsize_y_idx = np.dtype(node.inputs[2].dtype).itemsize
+        itemsize_nll = np.dtype(node.outputs[0].dtype).itemsize
+        itemsize_sm = np.dtype(node.outputs[1].dtype).itemsize
+        itemsize_am = np.dtype(node.outputs[2].dtype).itemsize
         x, b, y_idx = inp
         nll, sm, am = out
         fail = sub['fail']
@@ -215,12 +187,6 @@ class GpuCrossentropySoftmaxArgmax1HotWithBias(GpuKernelBase, Op):
                 %(fail)s;
             }
         """ % locals()
-        sync = ""
-        if config.gpuarray.sync:
-            sync = """
-            err = GpuArray_sync(&%(z)s->ga);
-            %(err_check)s
-            """ % locals()
         sio = StringIO()
         print("""
         if (PyGpuArray_DIMS(%(x)s)[0] !=
@@ -263,13 +229,12 @@ class GpuCrossentropySoftmaxArgmax1HotWithBias(GpuKernelBase, Op):
                 %(am)s->ga.data, %(am)s->ga.offset,
                 PyGpuArray_STRIDE(%(am)s, 0) / %(itemsize_am)s);
             %(err_check)s
-            %(sync)s
         }
         """ % locals(), file=sio)
         return sio.getvalue()
 
     def c_code_cache_version(self):
-        return (12,)
+        return (14,)
 
 
 gpu_crossentropy_softmax_argmax_1hot_with_bias = GpuCrossentropySoftmaxArgmax1HotWithBias()
@@ -294,28 +259,23 @@ class GpuCrossentropySoftmax1HotWithBiasDx(GpuKernelBase, Op):
         y_idx = as_gpuarray_variable(y_idx, ctx_name)
         return Apply(self, [dnll, sm, y_idx], [sm.type()])
 
-    def get_params(self, node):
-        return node.inputs[0].type.context
-
     def c_code_cache_version(self):
-        return (12,)
+        return (14,)
 
     def c_headers(self):
         return ['<numpy_compat.h>', '<gpuarray/types.h>']
 
     def c_code(self, node, nodename, inp, out, sub):
-        if node.inputs[0].type.context.kind != b'cuda':
-            raise NotImplementedError("cuda only")
         typecode_dx = pygpu.gpuarray.dtype_to_typecode(node.outputs[0].dtype)
-        itemsize_dnll = numpy.dtype(node.inputs[0].dtype).itemsize
-        itemsize_sm = numpy.dtype(node.inputs[1].dtype).itemsize
-        itemsize_y_idx = numpy.dtype(node.inputs[2].dtype).itemsize
-        itemsize_dx = numpy.dtype(node.outputs[0].dtype).itemsize
+        itemsize_dnll = np.dtype(node.inputs[0].dtype).itemsize
+        itemsize_sm = np.dtype(node.inputs[1].dtype).itemsize
+        itemsize_y_idx = np.dtype(node.inputs[2].dtype).itemsize
+        itemsize_dx = np.dtype(node.outputs[0].dtype).itemsize
         dtype_dnll = node.inputs[0].dtype
         dtype_sm = node.inputs[1].dtype
         dtype_y_idx = node.inputs[2].dtype
         dtype_dx = node.outputs[0].dtype
-        type_intp = gpuarray.dtype_to_ctype(numpy.intp)
+        type_intp = gpuarray.dtype_to_ctype(np.intp)
         dnll, sm, y_idx = inp
         dx, = out
         fail = sub['fail']
@@ -329,24 +289,16 @@ class GpuCrossentropySoftmax1HotWithBiasDx(GpuKernelBase, Op):
                 %(fail)s;
             }
         """ % locals()
-        sync = ""
-        if config.gpuarray.sync:
-            sync = """
-            err = GpuArray_sync(&%(z)s->ga);
-            %(err_check)s
-            """ % locals()
         return """
         // Get `dnll.shape[0]` or set it to zero if `dnll` is a scalar.
         const ssize_t %(dnll)s_dims0 = (PyGpuArray_NDIM(%(dnll)s) > 0 ?
                                         PyGpuArray_DIMS(%(dnll)s)[0] :
                                         (ssize_t) 0);
-
         // Get `dnll.strides[0]` and set it to zero if `dnll` is a scalar
         // or a vector with just one element.
         const ssize_t %(dnll)s_strides0 = (%(dnll)s_dims0 > 1 ?
                                            PyGpuArray_STRIDES(%(dnll)s)[0] :
                                            (ssize_t) 0);
-
         if ((PyGpuArray_NDIM(%(dnll)s) > 1)
             || (PyGpuArray_NDIM(%(sm)s) != 2)
             || (PyGpuArray_NDIM(%(y_idx)s) != 1))
@@ -411,9 +363,8 @@ class GpuCrossentropySoftmax1HotWithBiasDx(GpuKernelBase, Op):
                 (void *)&stride_YIDX0,
                 (void *)%(dx)s->ga.data, (void *)&%(dx)s->ga.offset,
                 (void *)&stride_DX0, (void *)&stride_DX1};
-            int err = GpuKernel_call(&%(k_var)s, 3, threads_per_block, n_blocks, 0, kernel_params);
+            int err = GpuKernel_call(&%(k_var)s, 3, n_blocks, threads_per_block, 0, kernel_params);
             %(err_check)s
-            %(sync)s
         }
         assert(%(dx)s);
         """ % locals()
@@ -435,30 +386,32 @@ class GpuCrossentropySoftmax1HotWithBiasDx(GpuKernelBase, Op):
         type_dx = gpuarray.dtype_to_ctype(dtype_dx)
         kname = "kCrossEntropySoftmax1HotWithBiasDx"
         k_var = "kCrossEntropySoftmax1HotWithBiasDx_" + nodename
+        params = [
+            gpuarray.SIZE, gpuarray.SIZE,
+            gpuarray.GpuArray, gpuarray.SIZE, gpuarray.SSIZE,
+            gpuarray.GpuArray, gpuarray.SIZE, gpuarray.SSIZE, gpuarray.SSIZE,
+            gpuarray.GpuArray, gpuarray.SIZE, gpuarray.SSIZE,
+            gpuarray.GpuArray, gpuarray.SIZE, gpuarray.SSIZE, gpuarray.SSIZE,
+        ]
         sio = StringIO()
-        print("""
+        print("""#include "cluda.h"
+
         KERNEL void %(kname)s(
            const ga_size N, const ga_size K,
-           const %(type_dnll)s* dnll, const ga_size offset_dnll,
-           const ga_ssize dnll_s0,
-           const %(type_sm)s* sm, const ga_size offset_sm,
-           const ga_ssize sm_s0, const ga_ssize sm_s1,
-           const %(type_y_idx)s* y_idx, const ga_size offset_y_idx,
-           const ga_ssize y_idx_s0,
-           %(type_dx)s* dx, const ga_size offset_dx,
-           const ga_ssize dx_s0, const ga_ssize dx_s1)
+           GLOBAL_MEM const %(type_dnll)s* dnll, const ga_size offset_dnll, const ga_ssize dnll_s0,
+           GLOBAL_MEM const %(type_sm)s* sm, const ga_size offset_sm, const ga_ssize sm_s0, const ga_ssize sm_s1,
+           GLOBAL_MEM const %(type_y_idx)s* y_idx, const ga_size offset_y_idx, const ga_ssize y_idx_s0,
+           GLOBAL_MEM %(type_dx)s* dx, const ga_size offset_dx, const ga_ssize dx_s0, const ga_ssize dx_s1)
         {
-            dnll = (const %(type_dnll)s *)(((char *)dnll)+offset_dnll);
-            sm = (const %(type_sm)s *)(((char *)sm)+offset_sm);
-            y_idx = (const %(type_y_idx)s *)(((char *)y_idx)+offset_y_idx);
-            dx = (%(type_dx)s *)(((char *)dx)+offset_dx);
-
-            for (int i = blockIdx.x; i < N; i += gridDim.x)
+            dnll = (GLOBAL_MEM const %(type_dnll)s *)(((GLOBAL_MEM char *)dnll)+offset_dnll);
+            sm = (GLOBAL_MEM const %(type_sm)s *)(((GLOBAL_MEM char *)sm)+offset_sm);
+            y_idx = (GLOBAL_MEM const %(type_y_idx)s *)(((GLOBAL_MEM char *)y_idx)+offset_y_idx);
+            dx = (GLOBAL_MEM %(type_dx)s *)(((GLOBAL_MEM char *)dx)+offset_dx);
+            for (ga_int i = GID_0; i < N; i += GDIM_0)
             {
                 %(wtype_dnll)s dnll_i = %(load_dnll)s(dnll[i * dnll_s0]);
                 %(type_y_idx)s y_i = y_idx[i * y_idx_s0];
-
-                for (int j = threadIdx.x; j < K; j += blockDim.x)
+                for (ga_int j = LID_0; j < K; j += LDIM_0)
                 {
                     if (y_i == j)
                     {
@@ -476,15 +429,9 @@ class GpuCrossentropySoftmax1HotWithBiasDx(GpuKernelBase, Op):
             }
         }
         """ % locals(), file=sio)
-        params = [
-            'uintp', 'uintp',
-            gpuarray.GpuArray, 'uintp', 'intp',
-            gpuarray.GpuArray, 'uintp', 'intp', 'intp',
-            gpuarray.GpuArray, 'uintp', 'intp',
-            gpuarray.GpuArray, 'uintp', 'intp', 'intp'
-            ]
         return [Kernel(code=sio.getvalue(), name=kname, params=params,
                        flags=flags, objvar=k_var)]
+
 
 gpu_crossentropy_softmax_1hot_with_bias_dx = GpuCrossentropySoftmax1HotWithBiasDx()
 
@@ -501,26 +448,21 @@ class GpuSoftmax(GpuKernelBase, Op):
         x = as_gpuarray_variable(x, infer_context_name(x))
         return Apply(self, [x], [x.type()])
 
-    def get_params(self, node):
-        return node.inputs[0].type.context
-
     def infer_shape(self, node, shape):
         return shape
 
     def c_code_cache_version(self):
-        return (15,) + inline_softmax.code_version
+        return (17,)
 
     def c_headers(self):
         return ['<numpy_compat.h>', '<gpuarray/types.h>']
 
     def c_code(self, node, nodename, inp, out, sub):
-        if node.inputs[0].type.context.kind != b'cuda':
-            raise NotImplementedError("cuda only")
         dtype_x = node.inputs[0].dtype
         work_x = work_dtype(dtype_x)
         dtype_z = node.outputs[0].dtype
-        itemsize_x = numpy.dtype(dtype_x).itemsize
-        itemsize_z = numpy.dtype(dtype_z).itemsize
+        itemsize_x = np.dtype(dtype_x).itemsize
+        itemsize_z = np.dtype(dtype_z).itemsize
         typecode = pygpu.gpuarray.dtype_to_typecode(node.outputs[0].dtype)
         x, = inp
         z, = out
@@ -532,15 +474,6 @@ class GpuSoftmax(GpuKernelBase, Op):
                 %(fail)s;
             }
         """ % locals()
-        sync = ""
-        if config.gpuarray.sync:
-            sync = """
-            err = GpuArray_sync(&%(z)s->ga);
-            msg = "sync error";
-            %(err_check)s
-            """ % locals()
-        else:
-            sync = ""
         return """
         if (PyGpuArray_NDIM(%(x)s) != 2)
         {
@@ -564,7 +497,7 @@ class GpuSoftmax(GpuKernelBase, Op):
         {
             size_t n_blocks[3] = {std::min(PyGpuArray_DIMS(%(x)s)[0], (size_t)(32 * 1024)), 1, 1};
 //TODO, detect the maximum number of thread per block.
-            size_t threads_per_block[3] = {std::min(PyGpuArray_DIMS(%(x)s)[1], (size_t)512), 1, 1};
+            size_t threads_per_block[3] = {std::min(PyGpuArray_DIMS(%(x)s)[1], (size_t)256), 1, 1}; // TODO: Read GA_CTX_PROP_MAXLSIZE0
             size_t shmem_sz = PyGpuArray_DIMS(%(x)s)[1] *
                                      2 * sizeof(npy_%(work_x)s);
             ssize_t stride_X0 = PyGpuArray_STRIDES(%(x)s)[0] / %(itemsize_x)s;
@@ -587,20 +520,19 @@ class GpuSoftmax(GpuKernelBase, Op):
               //TODO: read the information from the card.
               if(shmem_sz < (32 * 1024 - 500)){
                 err = GpuKernel_call(&kSoftmax_%(nodename)s, 3,
-                                     threads_per_block, n_blocks, shmem_sz,
+                                     n_blocks, threads_per_block, shmem_sz,
                                      kernel_params);
                 fmt_str = "gpuarray error: kSoftmax_%(nodename)s: %%s";
                 msg = GpuKernel_error(&kSoftmax_%(nodename)s, err);
               }else{
                 err = GpuKernel_call(&kSoftmax_fixed_shared%(nodename)s, 3,
-                                     threads_per_block, n_blocks,
+                                     n_blocks, threads_per_block,
                                      threads_per_block[0] * sizeof(npy_%(work_x)s),
                                      kernel_params);
                 fmt_str = "gpuarray error: kSoftmax_fixed_shared%(nodename)s: %%s";
                 msg = GpuKernel_error(&kSoftmax_fixed_shared%(nodename)s, err);
               }
               %(err_check)s
-              %(sync)s
             }
         }
         assert(%(z)s);
@@ -616,70 +548,164 @@ class GpuSoftmax(GpuKernelBase, Op):
         type_x = gpuarray.dtype_to_ctype(dtype_x)
         type_sm = gpuarray.dtype_to_ctype(dtype_sm)
         type_acc = gpuarray.dtype_to_ctype(work_sm)
+
+        ctype = gpuarray.dtype_to_ctype(work_sm)
+
         params = [
-            'uintp', 'uintp',
-            gpuarray.GpuArray, 'uintp', 'intp', 'intp',
-            gpuarray.GpuArray, 'uintp', 'intp', 'intp'
-            ]
+            gpuarray.SIZE, gpuarray.SIZE,
+            gpuarray.GpuArray, gpuarray.SIZE, gpuarray.SSIZE, gpuarray.SSIZE,
+            gpuarray.GpuArray, gpuarray.SIZE, gpuarray.SSIZE, gpuarray.SSIZE
+        ]
         kernels = []
         kname = "kSoftmax"
         k_var = "kSoftmax_" + nodename
-        code = nvcc_kernel(
-            kname,
-            params=['const ga_size M', 'const ga_size N',
-                    'const %s * x' % type_x, 'const ga_size offset_x',
-                    'const ga_ssize sx0', 'const ga_ssize sx1',
-                    '%s * sm' % type_sm, 'const ga_size offset_sm',
-                    'const ga_ssize sm_s0', 'const ga_ssize sm_s1'],
-            body=["extern __shared__ %s buf[]" % type_acc,
-                  "%s * buf2 = buf + N" % type_acc,
-                  "x = (const %s *)(((char *)x)+offset_x)" % type_x,
-                  "sm = (%s *)(((char *)sm)+offset_sm)" % type_sm,
-                  "for (int blockIDX = blockIdx.x; blockIDX < M;"
-                  "     blockIDX += gridDim.x){",
-                  "for (int tx = threadIdx.x; tx< N; tx += blockDim.x){",
-                  "buf[tx] = %s(x[blockIDX * sx0 + tx * sx1])" % load_x,
-                  "buf2[tx] = buf[tx]",
-                  "}",
-                  "__syncthreads()",
-                  inline_softmax('N', 'buf', 'buf2', 'threadIdx.x',
-                                 'blockDim.x', dtype=work_sm),
-                  "for (int tx = threadIdx.x; tx< N; tx += blockDim.x){",
-                  # This set all value correctly
-                  "sm[blockIDX * sm_s0 + tx * sm_s1] = %s(buf[tx])" % write_sm,
-                  "}",
-                  "__syncthreads()",
-                  "}",
-                  ])
+        code = """#include "cluda.h"
+
+        KERNEL void %(kname)s (const ga_size M, const ga_size N,
+                               GLOBAL_MEM const %(type_x)s * x, const ga_size offset_x, const ga_ssize sx0, const ga_ssize sx1,
+                               GLOBAL_MEM %(type_sm)s * sm, const ga_size offset_sm, const ga_ssize sm_s0, const ga_ssize sm_s1 GA_DECL_SHARED_PARAM(%(type_acc)s, buf))
+        {
+            GA_DECL_SHARED_BODY(%(type_acc)s, buf);
+            LOCAL_MEM_ARG %(type_acc)s * buf2 = buf + N;
+            x = (GLOBAL_MEM const %(type_x)s *)(((GLOBAL_MEM char *)x)+offset_x);
+            sm = (GLOBAL_MEM %(type_sm)s *)(((GLOBAL_MEM char *)sm)+offset_sm);
+            for (ga_int blockIDX = GID_0; blockIDX < M; blockIDX += GDIM_0) {
+                for (ga_int tx = LID_0; tx< N; tx += LDIM_0) {
+                    buf[tx] = %(load_x)s(x[blockIDX * sx0 + tx * sx1]);
+                    buf2[tx] = buf[tx];
+                }
+                local_barrier();
+                {
+                    // This function trashes buf[1..GA_WARP_SIZE],
+                    // leaving the reduction result in buf[0].
+                    if (LID_0 < GA_WARP_SIZE) {
+                        for (ga_int i = LID_0 + GA_WARP_SIZE; i < N; i += GA_WARP_SIZE)
+                        {
+                            buf[LID_0] = max(buf[LID_0], buf[i]);
+                        }
+                    }
+                    local_barrier();
+                    //reduce so that LID_0 0 has the reduction of everything
+                    for (ga_uint _n = GA_WARP_SIZE / 2; _n > 0; _n /= 2) {
+                        if (LID_0 < _n && LID_0 + _n < N)
+                            buf[LID_0] = max(buf[LID_0], buf[LID_0+_n]);
+                        local_barrier();
+                    }
+                }
+                %(ctype)s row_max = buf[0];
+                local_barrier();
+                for(ga_int __i=LID_0; __i<N; __i+=LDIM_0){
+                    buf[__i] = exp(buf2[__i] - row_max);
+                    buf2[__i] = buf[__i];
+                }
+                local_barrier();
+                {
+                    // This function trashes buf[1..GA_WARP_SIZE],
+                    // leaving the reduction result in buf[0].
+                    if (LID_0 < GA_WARP_SIZE) {
+                        for (ga_int i = LID_0 + GA_WARP_SIZE; i < N; i += GA_WARP_SIZE)
+                        {
+                            buf[LID_0] = buf[LID_0] + buf[i];
+                        }
+                    }
+                    local_barrier();
+                    //reduce so that LID_0 0 has the reduction of everything
+                    for (ga_uint _n = GA_WARP_SIZE / 2; _n > 0; _n /= 2) {
+                        if (LID_0 < _n && LID_0 + _n < N)
+                            buf[LID_0] = buf[LID_0] + buf[LID_0+_n];
+                        local_barrier();
+                    }
+                }
+                %(ctype)s row_sum = buf[0];
+                local_barrier();
+                for(ga_int __i=LID_0; __i<N; __i+=LDIM_0) {
+                    buf[__i] = buf2[__i] / row_sum;
+                }
+                local_barrier();
+                for (ga_int tx = LID_0; tx< N; tx += LDIM_0) {
+                    sm[blockIDX * sm_s0 + tx * sm_s1] = %(write_sm)s(buf[tx]);
+                }
+                local_barrier();
+            }
+        }
+        """ % locals()
         kernels.append(Kernel(code=code, name=kname, params=params,
                               flags=flags, objvar=k_var))
         kname = "kSoftmax_fixed_shared"
         k_var = "kSoftmax_fixed_shared" + nodename
-        code = nvcc_kernel(
-            kname,
-            params=['const ga_size M', 'const ga_size N',
-                    'const %s * x' % type_x, 'const ga_size offset_x',
-                    'const ga_ssize sx0', 'const ga_ssize sx1',
-                    '%s * sm' % type_sm, 'const ga_size offset_sm',
-                    'const ga_ssize sm_s0', 'const ga_ssize sm_s1'],
-            body=["extern __shared__ %s buf[]" % type_acc,
-                  "x = (const %s *)(((char *)x)+offset_x)" % type_x,
-                  "sm = (%s *)(((char *)sm)+offset_sm)" % type_sm,
-                  "for (int blockIDX = blockIdx.x; blockIDX < M;"
-                  "     blockIDX += gridDim.x){",
-                  "const %s *x_ptr = &x[blockIDX * sx0]" % type_x,
-                  "%s *sm_ptr = &sm[blockIDX * sm_s0]" % type_sm,
-                  inline_softmax_fixed_shared('N', 'buf', 'x_ptr', 'sx1',
-                                              load_x,
-                                              'sm_ptr', 'sm_s1', write_sm,
-                                              'threadIdx.x', 'blockDim.x',
-                                              dtype=work_sm),
-                  "__syncthreads()",
-                  "}",
-                  ])
+        code = """#include "cluda.h"
+
+        KERNEL void %(kname)s (const ga_size M, const ga_size N,
+                               GLOBAL_MEM const %(type_x)s * x, const ga_size offset_x, const ga_ssize sx0, const ga_ssize sx1,
+                               GLOBAL_MEM %(type_sm)s * sm, const ga_size offset_sm, const ga_ssize sm_s0, const ga_ssize sm_s1 GA_DECL_SHARED_PARAM(%(type_acc)s, buf))
+        {
+            GA_DECL_SHARED_BODY(%(type_acc)s, buf);
+            x = (GLOBAL_MEM const %(type_x)s *)(((GLOBAL_MEM char *)x)+offset_x);
+            sm = (GLOBAL_MEM %(type_sm)s *)(((GLOBAL_MEM char *)sm)+offset_sm);
+            for (ga_int blockIDX = GID_0; blockIDX < M; blockIDX += GDIM_0){
+                GLOBAL_MEM const %(type_x)s *x_ptr = &x[blockIDX * sx0];
+                GLOBAL_MEM %(type_sm)s *sm_ptr = &sm[blockIDX * sm_s0];
+                {
+                    // This function trashes buf[1..n_threads],
+                    // leaving the reduction result in buf[0].
+                    %(ctype)s red = %(load_x)s(x_ptr[LID_0 * sx1]);
+                    #pragma unroll 16
+                    for (ga_int i = LID_0 + LDIM_0; i<N; i += LDIM_0) {
+                        red = max(red, %(load_x)s(x_ptr[i * sx1]));
+                    }
+                    buf[LID_0] = red;
+                    local_barrier();
+                    if (LID_0 < GA_WARP_SIZE) {
+                        for (ga_int i = LID_0 + GA_WARP_SIZE; i < LDIM_0; i += GA_WARP_SIZE) {
+                            buf[LID_0] = max(buf[LID_0], buf[i]);
+                        }
+                    }
+                    local_barrier();
+                    //reduce so that LID_0 0 has the reduction of everything
+                    for (ga_uint _n = GA_WARP_SIZE / 2; _n > 0; _n /= 2) {
+                        if (LID_0 < _n && LID_0 + _n < N)
+                            buf[LID_0] = max(buf[LID_0], buf[LID_0+_n]);
+                        local_barrier();
+                    }
+                }
+                %(ctype)s row_max = buf[0];
+                local_barrier();
+                {
+                    // This function trashes buf[1..n_threads],
+                    // leaving the reduction result in buf[0].
+                    %(ctype)s red = exp(%(load_x)s(x_ptr[LID_0 * sx1]) - row_max);
+                    #pragma unroll 16
+                    for (ga_int i = LID_0 + LDIM_0; i<N; i += LDIM_0) {
+                        red = red + exp(%(load_x)s(x_ptr[i * sx1]) - row_max);
+                    }
+                    buf[LID_0] = red;
+                    local_barrier();
+                    if (LID_0 < GA_WARP_SIZE) {
+                        for (ga_int i = LID_0 + GA_WARP_SIZE; i < LDIM_0; i += GA_WARP_SIZE) {
+                            buf[LID_0] = buf[LID_0] + buf[i];
+                        }
+                    }
+                    local_barrier();
+                    //reduce so that LID_0 0 has the reduction of everything
+                    for (ga_uint _n = GA_WARP_SIZE / 2; _n > 0; _n /= 2) {
+                        if (LID_0 < _n && LID_0 + _n < N)
+                            buf[LID_0] = buf[LID_0] + buf[LID_0+_n];
+                        local_barrier();
+                    }
+                }
+                %(ctype)s row_sum = buf[0];
+                local_barrier();
+                for (ga_int tx = LID_0; tx< N; tx += LDIM_0){
+                    sm_ptr[tx * sm_s1] = %(write_sm)s(exp(%(load_x)s(x_ptr[tx * sx1]) - row_max) / row_sum);
+                }
+                local_barrier();
+            }
+        }
+        """ % locals()
         kernels.append(Kernel(code=code, name=kname, params=params,
                               flags=flags, objvar=k_var))
         return kernels
+
 
 gpu_softmax = GpuSoftmax()
 
@@ -700,28 +726,23 @@ class GpuSoftmaxWithBias(GpuKernelBase, Op):
         b = as_gpuarray_variable(b, ctx_name)
         return Apply(self, [x, b], [x.type()])
 
-    def get_params(self, node):
-        return node.inputs[0].type.context
-
     def infer_shape(self, node, shape):
         return [shape[0]]
 
     def c_code_cache_version(self):
-        return (14,) + inline_softmax.code_version
+        return (16,)
 
     def c_headers(self):
         return ['<numpy_compat.h>', '<gpuarray/types.h>']
 
     def c_code(self, node, nodename, inp, out, sub):
-        if node.inputs[0].type.context.kind != b'cuda':
-            raise NotImplementedError('cuda only')
         dtype_x = node.inputs[0].dtype
         dtype_b = node.inputs[1].dtype
         dtype_z = node.outputs[0].dtype
         work_x = work_dtype(dtype_x)
-        itemsize_x = numpy.dtype(dtype_x).itemsize
-        itemsize_b = numpy.dtype(dtype_b).itemsize
-        itemsize_z = numpy.dtype(dtype_z).itemsize
+        itemsize_x = np.dtype(dtype_x).itemsize
+        itemsize_b = np.dtype(dtype_b).itemsize
+        itemsize_z = np.dtype(dtype_z).itemsize
         typecode = pygpu.gpuarray.dtype_to_typecode(node.outputs[0].dtype)
         x, b = inp
         z, = out
@@ -733,13 +754,6 @@ class GpuSoftmaxWithBias(GpuKernelBase, Op):
                 %(fail)s;
             }
         """ % locals()
-        sync = ""
-        if config.gpuarray.sync:
-            sync = """
-            err = GpuArray_sync(&%(z)s->ga);
-            msg = "sync error";
-            %(err_check)s
-            """ % locals()
         return """
         if (PyGpuArray_NDIM(%(x)s) != 2)
         {
@@ -778,7 +792,7 @@ class GpuSoftmaxWithBias(GpuKernelBase, Op):
         {
             size_t n_blocks[3] = {std::min(PyGpuArray_DIMS(%(x)s)[0], (size_t)(32*1024)), 1, 1};
 //TODO, detect the maximum number of thread per block.
-            size_t threads_per_block[3] = {std::min(PyGpuArray_DIMS(%(x)s)[1], (size_t)512), 1, 1};
+            size_t threads_per_block[3] = {std::min(PyGpuArray_DIMS(%(x)s)[1], (size_t)256), 1, 1}; // TODO: Read GA_CTX_PROP_MAXLSIZE0
             size_t shmem_sz = PyGpuArray_DIMS(%(x)s)[1] *
                                      2 * sizeof(npy_%(work_x)s);
             ssize_t stride_X0 = PyGpuArray_STRIDES(%(x)s)[0] / %(itemsize_x)s;
@@ -801,20 +815,19 @@ class GpuSoftmaxWithBias(GpuKernelBase, Op):
             {
               if(shmem_sz < (32 * 1024 - 500)){
                 err = GpuKernel_call(&kSoftmaxWithBias_%(nodename)s, 3,
-                                     threads_per_block, n_blocks, shmem_sz,
+                                     n_blocks, threads_per_block, shmem_sz,
                                      kernel_params);
                 fmt_str = "gpuarray error: kSoftmaxWithBias_%(nodename)s: %%s";
                 msg = GpuKernel_error(&kSoftmaxWithBias_%(nodename)s, err);
               }else{
                 err = GpuKernel_call(&kSoftmaxWithBias_fixed_shared%(nodename)s,
-                                     3, threads_per_block, n_blocks,
+                                     3, n_blocks, threads_per_block,
                                      threads_per_block[0] * sizeof(npy_%(work_x)s),
                                      kernel_params);
                 fmt_str = "gpuarray error: kSoftmaxWithBias_fixed_shared%(nodename)s: %%s";
                 msg = GpuKernel_error(&kSoftmaxWithBias_fixed_shared%(nodename)s, err);
               }
               %(err_check)s
-              %(sync)s
             }
         }
         assert(%(z)s);
@@ -833,76 +846,169 @@ class GpuSoftmaxWithBias(GpuKernelBase, Op):
         type_b = gpuarray.dtype_to_ctype(dtype_b)
         type_sm = gpuarray.dtype_to_ctype(dtype_sm)
         type_acc = gpuarray.dtype_to_ctype(work_sm)
+
+        ctype = gpuarray.dtype_to_ctype(work_sm)
+
         params = [
-            'uintp', 'uintp',
-            gpuarray.GpuArray, 'uintp', 'intp', 'intp',
-            gpuarray.GpuArray, 'uintp', 'intp',
-            gpuarray.GpuArray, 'uintp', 'intp', 'intp'
-            ]
+            gpuarray.SIZE, gpuarray.SIZE,
+            gpuarray.GpuArray, gpuarray.SIZE, gpuarray.SSIZE, gpuarray.SSIZE,
+            gpuarray.GpuArray, gpuarray.SIZE, gpuarray.SSIZE,
+            gpuarray.GpuArray, gpuarray.SIZE, gpuarray.SSIZE, gpuarray.SSIZE,
+        ]
         kernels = []
         kname = "kSoftmaxWithBias"
         k_var = "kSoftmaxWithBias_" + nodename
-        code = nvcc_kernel(
-            kname,
-            params=['const ga_size M', 'const ga_size N',
-                    'const %s * x' % type_x, 'const ga_size offset_x',
-                    'const ga_ssize sx0', 'const ga_ssize sx1',
-                    'const %s * b' % type_b, 'const ga_size offset_b',
-                    'const ga_ssize sb0',
-                    '%s * sm' % type_sm, 'const ga_size offset_sm',
-                    'const ga_ssize sm_s0', 'const ga_ssize sm_s1'],
-            body=["extern __shared__ %s buf[]" % type_acc,
-                  "%s * buf2 = buf + N" % type_acc,
-                  "x = (const %s *)(((char *)x)+offset_x)" % type_x,
-                  "b = (const %s *)(((char *)b)+offset_b)" % type_b,
-                  "sm = (%s *)(((char *)sm)+offset_sm)" % type_sm,
-                  "for (int blockIDX = blockIdx.x; blockIDX < M;"
-                  "     blockIDX += gridDim.x){",
-                  "for (int tx = threadIdx.x; tx< N; tx += blockDim.x){",
-                  "buf[tx] = %s(x[blockIDX * sx0 + tx * sx1])" % load_x,
-                  "buf[tx] += %s(b[tx * sb0])" % load_b,
-                  "buf2[tx] = buf[tx]",
-                  "}",
-                  "__syncthreads()",
-                  inline_softmax('N', 'buf', 'buf2',
-                                 'threadIdx.x', 'blockDim.x', work_sm),
-                  "for (int tx = threadIdx.x; tx< N; tx += blockDim.x){",
-                  "sm[blockIDX * sm_s0 + tx * sm_s1] = %s(buf[tx])" % write_sm,
-                  "}",
-                  "__syncthreads()",
-                  "}",
-                  ])
+        code = """#include "cluda.h"
+
+        KERNEL void %(kname)s (const ga_size M, const ga_size N,
+                       GLOBAL_MEM const %(type_x)s * x, const ga_size offset_x, const ga_ssize sx0, const ga_ssize sx1,
+                       GLOBAL_MEM const %(type_b)s * b, const ga_size offset_b, const ga_ssize sb0,
+                       GLOBAL_MEM %(type_sm)s * sm, const ga_size offset_sm, const ga_ssize sm_s0, const ga_ssize sm_s1 GA_DECL_SHARED_PARAM(%(type_acc)s, buf))
+        {
+            GA_DECL_SHARED_BODY(%(type_acc)s, buf);
+            LOCAL_MEM_ARG %(type_acc)s * buf2 = buf + N;
+            x = (GLOBAL_MEM const %(type_x)s *)(((GLOBAL_MEM char *)x)+offset_x);
+            b = (GLOBAL_MEM const %(type_b)s *)(((GLOBAL_MEM char *)b)+offset_b);
+            sm = (GLOBAL_MEM %(type_sm)s *)(((GLOBAL_MEM char *)sm)+offset_sm);
+            for (ga_int blockIDX = GID_0; blockIDX < M; blockIDX += GDIM_0){
+                for (ga_int tx = LID_0; tx< N; tx += LDIM_0){
+                    buf[tx] = %(load_x)s(x[blockIDX * sx0 + tx * sx1]);
+                    buf[tx] += %(load_b)s(b[tx * sb0]);
+                    buf2[tx] = buf[tx];
+                }
+                local_barrier();
+                {
+                    // This function trashes buf[1..GA_WARP_SIZE],
+                    // leaving the reduction result in buf[0].
+                    if (LID_0 < GA_WARP_SIZE) {
+                        for (ga_int i = LID_0 + GA_WARP_SIZE; i < N; i += GA_WARP_SIZE)
+                        {
+                            buf[LID_0] = max(buf[LID_0], buf[i]);
+                        }
+                    }
+                    local_barrier();
+                    //reduce so that LID_0 0 has the reduction of everything
+                    for (ga_uint _n = GA_WARP_SIZE / 2; _n > 0; _n /= 2) {
+                        if (LID_0 < _n && LID_0 + _n < N)
+                            buf[LID_0] = max(buf[LID_0], buf[LID_0+_n]);
+                        local_barrier();
+                    }
+                }
+                %(ctype)s row_max = buf[0];
+                local_barrier();
+                for(ga_int __i=LID_0; __i<N; __i+=LDIM_0){;
+                    buf[__i] = exp(buf2[__i] - row_max);
+                    buf2[__i] = buf[__i];
+                }
+                local_barrier();
+                {
+                    // This function trashes buf[1..GA_WARP_SIZE],
+                    // leaving the reduction result in buf[0].
+                    if (LID_0 < GA_WARP_SIZE) {
+                        for (ga_int i = LID_0 + GA_WARP_SIZE; i < N; i += GA_WARP_SIZE)
+                        {
+                            buf[LID_0] = buf[LID_0] + buf[i];
+                        }
+                    }
+                    local_barrier();
+                    //reduce so that LID_0 0 has the reduction of everything
+                    for (ga_uint _n = GA_WARP_SIZE / 2; _n > 0; _n /= 2) {
+                        if (LID_0 < _n && LID_0 + _n < N)
+                            buf[LID_0] = buf[LID_0] + buf[LID_0+_n];
+                        local_barrier();
+                    }
+                }
+                %(ctype)s row_sum = buf[0];
+                local_barrier();
+                for(ga_int __i=LID_0; __i<N; __i+=LDIM_0){
+                    buf[__i] = buf2[__i] / row_sum;
+                }
+                local_barrier();
+                for (ga_int tx = LID_0; tx< N; tx += LDIM_0){
+                    sm[blockIDX * sm_s0 + tx * sm_s1] = %(write_sm)s(buf[tx]);
+                }
+                local_barrier();
+            }
+        }
+        """ % locals()
         kernels.append(Kernel(code=code, name=kname, params=params,
                               flags=flags, objvar=k_var))
         kname = "kSoftmaxWithBias_fixed_shared"
         k_var = "kSoftmaxWithBias_fixed_shared" + nodename
-        code = nvcc_kernel(
-            kname,
-            params=['const ga_size M', 'const ga_size N',
-                    'const %s * x' % type_x, 'const ga_size offset_x',
-                    'const ga_ssize sx0', 'const ga_ssize sx1',
-                    'const %s * b' % type_b, 'const ga_size offset_b',
-                    'const ga_ssize sb0',
-                    '%s * sm' % type_sm, 'const ga_size offset_sm',
-                    'const ga_ssize sm_s0', 'const ga_ssize sm_s1'],
-            body=["extern __shared__ %s buf[]" % type_acc,
-                  "x = (const %s *)(((char *)x)+offset_x)" % type_x,
-                  "b = (const %s *)(((char *)b)+offset_b)" % type_b,
-                  "sm = (%s *)(((char *)sm)+offset_sm)" % type_sm,
-                  "for (int blockIDX = blockIdx.x; blockIDX < M;"
-                  "     blockIDX += gridDim.x){",
-                  "const %s *x_ptr = &x[blockIDX * sx0]" % type_x,
-                  "%s *sm_ptr = &sm[blockIDX * sm_s0]" % type_sm,
-                  inline_softmax_fixed_shared('N', 'buf', 'x_ptr', 'sx1',
-                                              load_x,
-                                              'sm_ptr', 'sm_s1', write_sm,
-                                              'threadIdx.x', 'blockDim.x',
-                                              'b', 'sb0', load_b, work_sm),
-                  "__syncthreads()",
-                  "}",
-                  ])
+        code = """#include "cluda.h"
+
+        KERNEL void %(kname)s (const ga_size M, const ga_size N,
+                       GLOBAL_MEM const %(type_x)s * x, const ga_size offset_x, const ga_ssize sx0, const ga_ssize sx1,
+                       GLOBAL_MEM const %(type_b)s * b, const ga_size offset_b, const ga_ssize sb0,
+                       GLOBAL_MEM %(type_sm)s * sm, const ga_size offset_sm, const ga_ssize sm_s0, const ga_ssize sm_s1 GA_DECL_SHARED_PARAM(%(type_acc)s, buf))
+        {
+            GA_DECL_SHARED_BODY(%(type_acc)s, buf);
+            x = (GLOBAL_MEM const %(type_x)s *)(((GLOBAL_MEM char *)x)+offset_x);
+            b = (GLOBAL_MEM const %(type_b)s *)(((GLOBAL_MEM char *)b)+offset_b);
+            sm = (GLOBAL_MEM %(type_sm)s *)(((GLOBAL_MEM char *)sm)+offset_sm);
+            for (ga_int blockIDX = GID_0; blockIDX < M; blockIDX += GDIM_0){
+                GLOBAL_MEM const %(type_x)s *x_ptr = &x[blockIDX * sx0];
+                GLOBAL_MEM %(type_sm)s *sm_ptr = &sm[blockIDX * sm_s0];
+                {
+                    // This function trashes buf[1..n_threads],
+                    // leaving the reduction result in buf[0].
+                    %(ctype)s red = %(load_x)s(x_ptr[LID_0 * sx1]) + %(load_b)s(b[LID_0 * sb0]);
+                    #pragma unroll 16
+                    for (ga_int i = LID_0 + LDIM_0; i<N; i += LDIM_0) {
+                        red = max(red, %(load_x)s(x_ptr[i * sx1]) + %(load_b)s(b[i * sb0]));
+                    }
+                    buf[LID_0] = red;
+                    local_barrier();
+                    if (LID_0 < GA_WARP_SIZE) {
+                        for (ga_int i = LID_0 + GA_WARP_SIZE; i < LDIM_0; i += GA_WARP_SIZE) {
+                            buf[LID_0] = max(buf[LID_0], buf[i]);
+                        }
+                    }
+                    local_barrier();
+                    //reduce so that LID_0 0 has the reduction of everything
+                    for (ga_uint _n = GA_WARP_SIZE / 2; _n > 0; _n /= 2) {
+                        if (LID_0 < _n && LID_0 + _n < N)
+                            buf[LID_0] = max(buf[LID_0], buf[LID_0+_n]);
+                        local_barrier();
+                    }
+                }
+                %(ctype)s row_max = buf[0];
+                local_barrier();
+                {
+                    // This function trashes buf[1..n_threads],
+                    // leaving the reduction result in buf[0].
+                    %(ctype)s red = exp(%(load_x)s(x_ptr[LID_0 * sx1]) + %(load_b)s(b[LID_0 * sb0]) - row_max);
+                    #pragma unroll 16
+                    for (ga_int i = LID_0 + LDIM_0; i<N; i += LDIM_0) {
+                    red = red + exp(%(load_x)s(x_ptr[i * sx1]) + %(load_b)s(b[i * sb0]) - row_max);
+                    }
+                    buf[LID_0] = red;
+                    local_barrier();
+                    if (LID_0 < GA_WARP_SIZE) {
+                        for (ga_int i = LID_0 + GA_WARP_SIZE; i < LDIM_0; i += GA_WARP_SIZE) {
+                            buf[LID_0] = buf[LID_0] + buf[i];
+                        }
+                    }
+                    local_barrier();
+                    //reduce so that LID_0 0 has the reduction of everything
+                    for (ga_uint _n = GA_WARP_SIZE / 2; _n > 0; _n /= 2) {
+                        if (LID_0 < _n && LID_0 + _n < N)
+                            buf[LID_0] = buf[LID_0] + buf[LID_0+_n];
+                        local_barrier();
+                    }
+                }
+                %(ctype)s row_sum = buf[0];
+                local_barrier();
+                for (ga_int tx = LID_0; tx< N; tx += LDIM_0){
+                    sm_ptr[tx * sm_s1] = %(write_sm)s(exp(%(load_x)s(x_ptr[tx * sx1]) + %(load_b)s(b[tx * sb0]) - row_max) / row_sum);
+                }
+                local_barrier();
+            }
+        }
+        """ % locals()
         kernels.append(Kernel(code=code, name=kname, params=params,
                               flags=flags, objvar=k_var))
         return kernels
+
 
 gpu_softmax_with_bias = GpuSoftmaxWithBias()

@@ -1,5 +1,5 @@
 from __future__ import absolute_import, print_function, division
-import numpy
+import numpy as np
 import six.moves.cPickle as pickle
 from six.moves import xrange
 import theano
@@ -13,10 +13,10 @@ def test_no_reuse():
     f = theano.function([x, y], x + y)
 
     # provide both inputs in the first call
-    f(numpy.ones(10, dtype='int64'), numpy.ones(10, dtype='int64'))
+    f(np.ones(10, dtype='int64'), np.ones(10, dtype='int64'))
 
     try:
-        f(numpy.ones(10))
+        f(np.ones(10))
     except TypeError:
         return
     assert not 'should not get here'
@@ -57,7 +57,7 @@ def test_gc_never_pickles_temporaries():
         # We can't compare the content or the length of the string
         # between f and g. 2 reason, we store some timming information
         # in float. They won't be the same each time. Different float
-        # can have different lenght when printed.
+        # can have different length when printed.
 
         def a(fn):
             return len(pickle.dumps(fn.maker))
@@ -78,8 +78,8 @@ def test_gc_never_pickles_temporaries():
 
         # now run the function once to create temporaries within the no-gc
         # linker
-        f(numpy.ones(100, dtype='float64'))
-        g(numpy.ones(100, dtype='float64'))
+        f(np.ones(100, dtype='float64'))
+        g(np.ones(100, dtype='float64'))
 
         # serialize the functions again
         post_f = pickle.dumps(f)
@@ -100,13 +100,12 @@ def test_gc_never_pickles_temporaries():
 
 
 def test_merge_opt_runtime():
-    """In the original merge optimization, the following graph took
-    like caused the MERGE optimizer to exhibit really bad performance
-    (quadratic? exponential?)
+    # In the original merge optimization, the following graph took
+    # like caused the MERGE optimizer to exhibit really bad performance
+    # (quadratic? exponential?)
+    #
+    # Ironically, there is actually no merging to do in this graph.
 
-    Ironically, there is actually no merging to do in this graph.
-
-    """
     x = T.dvector()
     for i in xrange(50):
         if i:

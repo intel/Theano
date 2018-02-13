@@ -1,8 +1,9 @@
 from __future__ import absolute_import, print_function, division
 import copy
 import six.moves.cPickle as pickle
-import numpy
+import numpy as np
 import unittest
+import time
 
 
 from theano import config, gof
@@ -17,8 +18,6 @@ from theano.tests.unittest_tools import SkipTest
 from theano import tensor
 from theano import tensor as T
 import theano
-
-import numpy as N
 
 
 def PatternOptimizer(p1, p2, ign=True):
@@ -281,7 +280,7 @@ class T_function(unittest.TestCase):
 
     def test_swap_SharedVariable(self):
         i = T.iscalar()
-        x_list = theano.shared(value=numpy.random.rand(10).astype(config.floatX))
+        x_list = theano.shared(value=np.random.rand(10).astype(config.floatX))
 
         x = T.scalar('x')
         # SharedVariable for tests, one of them has update
@@ -339,15 +338,14 @@ class T_function(unittest.TestCase):
             second_time = True
 
     def test_swap_SharedVariable_with_given(self):
-        """
-        A special testcase for logistic_sgd.py in Deep Learning Tutorial
-        This test assert that SharedVariable in different function have same storage
-        """
-        train_x = theano.shared(value=numpy.random.rand(10, 10).astype(config.floatX))
-        test_x = theano.shared(value=numpy.random.rand(10, 10).astype(config.floatX))
+        # A special testcase for logistic_sgd.py in Deep Learning Tutorial
+        # This test assert that SharedVariable in different function have same storage
 
-        train_y = theano.shared(value=numpy.random.rand(10, 1).astype(config.floatX))
-        test_y = theano.shared(value=numpy.random.rand(10, 1).astype(config.floatX))
+        train_x = theano.shared(value=np.random.rand(10, 10).astype(config.floatX))
+        test_x = theano.shared(value=np.random.rand(10, 10).astype(config.floatX))
+
+        train_y = theano.shared(value=np.random.rand(10, 1).astype(config.floatX))
+        test_y = theano.shared(value=np.random.rand(10, 1).astype(config.floatX))
 
         i = T.iscalar('index')
         x = T.vector('x')
@@ -493,49 +491,48 @@ class T_function(unittest.TestCase):
             assert (out2 == 3).all()
 
     def test_borrow_input(self):
-        """
-        Tests that the contract for io.In is respected. When borrow=False, it should be
-        impossible for outputs to be aliased to the input variables provided by the user,
-        either through a view-map or a destroy map. New tests should be added in the future
-        when borrow=True is implemented.
-        """
+        # Tests that the contract for io.In is respected. When borrow=False, it should be
+        # impossible for outputs to be aliased to the input variables provided by the user,
+        # either through a view-map or a destroy map. New tests should be added in the future
+        # when borrow=True is implemented.
+
         a = T.dmatrix()
-        aval = numpy.random.rand(3, 3)
+        aval = np.random.rand(3, 3)
 
         # when borrow=False, test that a destroy map cannot alias output to input
         f = theano.function([In(a, borrow=False)], Out(a + 1, borrow=True))
-        assert numpy.all(f(aval) == aval + 1)
-        assert not numpy.may_share_memory(aval, f(aval))
+        assert np.all(f(aval) == aval + 1)
+        assert not np.may_share_memory(aval, f(aval))
 
         # when borrow=False, test that a viewmap cannot alias output to input
         f = theano.function([In(a, borrow=False)], Out(a[0, :], borrow=True))
-        assert numpy.all(f(aval) == aval[0, :])
-        assert not numpy.may_share_memory(aval, f(aval))
+        assert np.all(f(aval) == aval[0, :])
+        assert not np.may_share_memory(aval, f(aval))
 
     def test_borrow_output(self):
         a = T.dmatrix()
         f = function([a], Out(a, borrow=False))
-        o = N.ones((3, 3))
+        o = np.ones((3, 3))
         assert o is not f(o)  # function no longer permits aliasing outputs to inputs
 
         f = function([a], Out(a * 4, borrow=False))
-        o = N.ones((3, 3))
+        o = np.ones((3, 3))
         four = f(o)
-        assert numpy.all(four == 4)
+        assert np.all(four == 4)
         f(o + .1)  # should not clobber the memory used to store four
-        assert numpy.all(four == 4)
+        assert np.all(four == 4)
 
         f = function([a], Out(a * 4, borrow=True), mode=theano.Mode('c|py_nogc', 'fast_run'))
-        o = N.ones((3, 3))
+        o = np.ones((3, 3))
         four = f(o)
-        assert numpy.all(four == 4)
+        assert np.all(four == 4)
         f(o + .1)  # should clobber the memory used to store four
         if theano.config.cxx:
-            assert not numpy.all(four == 4)
+            assert not np.all(four == 4)
         else:
             # The Elemwise.perform method don't reuse memory
             # as some numpy version don't support that correctly.
-            assert numpy.all(four == 4)
+            assert np.all(four == 4)
 
     def test_disconnected_input(self):
         a = T.scalar('a')
@@ -551,17 +548,15 @@ class T_function(unittest.TestCase):
         function([m, mt], mt * 2, on_unused_input='ignore')
 
     def test_givens_input_var(self):
-        """
-        Ensure error is raised when trying to replace an input variable.
-        """
+        # Ensure error is raised when trying to replace an input variable.
+
         x = T.scalar('x')
         y = x * 2
         self.assertRaises(RuntimeError, function, [x], y, givens={x: x + 1})
 
     def test_free(self):
-        """
-        Make test on free() function
-        """
+        # Make test on free() function
+
         x = T.vector('x')
         func = function([x], x + 1)
         func.fn.allow_gc = False
@@ -579,6 +574,48 @@ class T_function(unittest.TestCase):
             if not isinstance(key, theano.gof.Constant):
                 assert (val[0] is None)
 
+    def test_default_values(self):
+        # Check that default values are restored
+        # when an exception occurs in interactive mode.
+
+        a, b = T.dscalars('a', 'b')
+        c = a + b
+        func = theano.function([theano.In(a, name='first'), theano.In(b, value=1, name='second')], c)
+        x = func(first=1)
+        try:
+            func(second=2)
+        except TypeError:
+            assert(func(first=1) == x)
+
+    def test_check_for_aliased_inputs(self):
+        b = np.random.rand(5, 4)
+        s1 = theano.shared(b)
+        s2 = theano.shared(b)
+        x1 = theano.tensor.vector()
+
+        # Assert cases we should not check for aliased inputs
+        for d in [dict(outputs=[s1 + 1]),
+                  dict(outputs=[s1 + 1, s2 + 3]),
+                  dict(outputs=[s1 + 1], updates=[(s2, s2 + 3)]),
+                  dict(inputs=[x1], outputs=[x1 + 1], updates=[(s2, s2 + 3)])]:
+            if "inputs" not in d:
+                d["inputs"] = []
+            f = theano.function(**d)
+            assert not f._check_for_aliased_inputs, d
+
+        # Assert cases we should check for aliased inputs
+        for d in [dict(inputs=[theano.In(x1, borrow=True)],
+                       outputs=[x1 + 1], updates=[(s2, s2 + 3)]),
+                  dict(inputs=[theano.In(x1, borrow=True, mutable=True)],
+                       outputs=[x1 + 1], updates=[(s2, s2 + 3)]),
+                  dict(inputs=[theano.In(x1, mutable=True)],
+                       outputs=[x1 + 1], updates=[(s2, s2 + 3)])]:
+            if "inputs" not in d:
+                d["inputs"] = []
+            f = theano.function(**d)
+
+            assert f._check_for_aliased_inputs, d
+
 
 class T_picklefunction(unittest.TestCase):
 
@@ -587,8 +624,8 @@ class T_picklefunction(unittest.TestCase):
         x, s = T.scalars('xs')
 
         f = function([x, In(a, value=1.0, name='a'),
-                      In(s, value=0.0, update=s + a * x, mutable=True)], s + a * x)
-
+                      In(s, value=0.0, update=s + a * x, mutable=True)],
+                     s + a * x)
         try:
             g = copy.deepcopy(f)
         except NotImplementedError as e:
@@ -606,6 +643,9 @@ class T_picklefunction(unittest.TestCase):
         self.assertFalse(x in g.container)
         self.assertFalse(x in g.value)
         self.assertTrue(len(f.defaults) == len(g.defaults))
+        self.assertTrue(f._check_for_aliased_inputs is g._check_for_aliased_inputs)
+        self.assertTrue(f.name == g.name)
+        self.assertTrue(f.maker.fgraph.name == g.maker.fgraph.name)
         # print 'f.defaults = %s' % (f.defaults, )
         # print 'g.defaults = %s' % (g.defaults, )
         self.assertTrue(all([f_req == g_req and f_feed == g_feed and
@@ -623,6 +663,40 @@ class T_picklefunction(unittest.TestCase):
         self.assertFalse(f(1, 2) == g(1, 2))  # they should not be equal anymore.
         g(1, 2)  # put them back in sync
         self.assertTrue(f(3) == g(3))  # They should be in sync again.
+
+    def test_deepcopy_trust_input(self):
+        a = T.dscalar()  # the a is for 'anonymous' (un-named).
+        x, s = T.dscalars('xs')
+
+        f = function([x, In(a, value=1.0, name='a'),
+                      In(s, value=0.0, update=s + a * x, mutable=True)],
+                     s + a * x)
+        f.trust_input = True
+        try:
+            g = copy.deepcopy(f)
+        except NotImplementedError as e:
+            if e[0].startswith('DebugMode is not picklable'):
+                return
+            else:
+                raise
+        self.assertTrue(f.trust_input is g.trust_input)
+        f(np.asarray(2.))
+        self.assertRaises((ValueError, AttributeError,
+                           theano.compile.debugmode.InvalidValueError), f, 2.)
+        g(np.asarray(2.))
+        self.assertRaises((ValueError, AttributeError,
+                           theano.compile.debugmode.InvalidValueError), g, 2.)
+
+    def test_output_keys(self):
+        x = T.vector()
+        f = theano.function([x], {'vec': x**2})
+        o = f([2, 3, 4])
+        assert isinstance(o, dict)
+        assert np.allclose(o['vec'], [4, 9, 16])
+        g = copy.deepcopy(f)
+        o = g([2, 3, 4])
+        assert isinstance(o, dict)
+        assert np.allclose(o['vec'], [4, 9, 16])
 
     def test_deepcopy_shared_container(self):
         # Ensure that shared containers remain shared after a deep copy.
@@ -753,7 +827,7 @@ class T_picklefunction(unittest.TestCase):
         assert f2.container[s].storage is f1.container[s].storage
 
         # now put in a function with non-scalar
-        v_value = numpy.asarray([2, 3, 4.], dtype=config.floatX)
+        v_value = np.asarray([2, 3, 4.], dtype=config.floatX)
         f3 = function([x, In(v, value=v_value)], x + v)
         list_of_things.append(f3)
 
@@ -800,13 +874,13 @@ class T_picklefunction(unittest.TestCase):
         assert nl[5](3) == ol[5](3)
         assert nl[4].value[nl[0]] == 6
 
-        assert numpy.all(nl[6][nl[2]] == numpy.asarray([2, 3., 4]))
+        assert np.all(nl[6][nl[2]] == np.asarray([2, 3., 4]))
 
     def test_broken_pickle_with_shared(self):
         saves = []
 
         def pers_save(obj):
-            if isinstance(obj, numpy.ndarray):
+            if isinstance(obj, np.ndarray):
                 saves.append(obj)
                 return len(saves) - 1
             else:
@@ -815,7 +889,7 @@ class T_picklefunction(unittest.TestCase):
         def pers_load(id):
             return saves[id]
 
-        b = numpy.random.rand(5, 4)
+        b = np.random.rand(5, 4)
 
         x = theano.tensor.matrix()
         y = theano.shared(b)
@@ -884,15 +958,81 @@ class SomethingToPickle(object):
 
 
 def test_empty_givens_updates():
-    """
-    Regression test for bug fixed in 8625e03.
-    """
+    # Regression test for bug fixed in 8625e03.
+
     # Empty givens / updates dictionaries were not properly detected before,
     # triggering useless crashes at compile time.
     x = T.scalar()
     y = x * 2
     function([theano.In(x)], y, givens={})
     function([theano.In(x)], y, updates={})
+
+
+def test_sync_update():
+    # This test if sync_update work. This can only be tested when
+    # there is a GPU.  To test if we really sync, we compare a case we
+    # can run in parallel GPU and CPU computation. Then we sync to
+    # disable that parallel computation. Then we assert the time is
+    # higher.
+
+    import theano.gpuarray.tests.config
+    if theano.gpuarray.pygpu_activated:
+        sizes = [100, 500, 1000, 2000, 5000, 10000, 20000, 40000]
+        size = sizes[0]
+        w = theano.gpuarray.gpuarray_shared_constructor(
+            np.random.rand(size, size).astype('float32'), 'w',
+            target=theano.gpuarray.tests.config.test_ctx_name)
+        x = theano.gpuarray.gpuarray_shared_constructor(
+            np.random.rand(size, size).astype('float32'), 'w',
+            target=theano.gpuarray.tests.config.test_ctx_name)
+
+        updates = [(w, w + np.asarray(0.001, 'float32') * T.dot(x, x))]
+
+        f = theano.function([], updates=updates,
+                            mode=theano.gpuarray.tests.config.mode_with_gpu)
+        assert len(f.maker.fgraph.apply_nodes) == 1
+        assert any(isinstance(n.op, theano.gpuarray.blas.GpuGemm)
+                   for n in f.maker.fgraph.apply_nodes)
+        # Make sure libgpuarray have compile all kernels
+        f()
+        f.sync_shared()
+
+        # Find a good size that will take about .5s.
+        # This is to make the test more stable across different GPUs.
+        size = sizes[-1]
+        for i in sizes:
+            data = np.random.rand(i, i).astype('float32')
+            w.set_value(data)
+            x.set_value(data)
+            t0 = time.time()
+            f()
+            f.sync_shared()
+            t1 = time.time()
+            if (t1 - t0) < 0.5:
+                continue
+            size = i
+            break
+        # sync to make sure all computation are done
+        f.sync_shared()
+
+        t_0 = time.time()
+        for i in range(3):
+            f()
+            # Sync after each call to see the slowdown from sync.
+            f.sync_shared()
+            time.sleep(.5)
+        t_1 = time.time()
+        for i in range(3):
+            f()
+            time.sleep(.5)
+        f.sync_shared()
+        # Sync to make sure all computation are finished.
+        t_2 = time.time()
+        d1 = (t_1 - t_0)
+        d2 = (t_2 - t_1)
+        assert d1 > d2, (d1, d2)
+    else:
+        raise SkipTest("Sync is only available when pygpu is activated.")
 
 
 if __name__ == '__main__':

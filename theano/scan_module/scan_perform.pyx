@@ -62,7 +62,7 @@ import copy
 
 
 def get_version():
-    return 0.293
+    return 0.296
 
 @cython.boundscheck(False)
 def perform(
@@ -148,7 +148,7 @@ def perform(
         This is the linker, i.e. the function that will loop over the
         computational graph and call the perform of each operation. For this
         linker there is a c version in gof/lazy_linker.c that will be the
-        starting point of implementing this funciton in C ( we need to take
+        starting point of implementing this function in C ( we need to take
         all the code around the call of this function and put in C inside
         that code)
     fnct: python object
@@ -217,7 +217,7 @@ def perform(
     else:
         for idx in range(n_seqs):
             if args[<unsigned int>(1+idx)].shape[0] < n_steps:
-                raise ValueError(('Sequence is shorter then the required '
+                raise ValueError(('Sequence is shorter than the required '
                                  'number of steps : (n_steps, seq, '
                                   'seq.shape):'), n_steps,
                                   args[1+idx],
@@ -355,7 +355,7 @@ def perform(
             pdx = offset + n_shared_outs
             output_storage[<unsigned int>pdx].storage[0] = None
 
-        # 4.5. Keep a reference to the variables (ndarrays, CudaNdarrays,
+        # 4.5. Keep a reference to the variables (ndarrays, GpuArrays,
         # etc) currently in the output_storage to be able to compare them
         # with the actual outputs of the inner function after its
         # execution. Also keep pointers to their data to be able to detect
@@ -373,7 +373,7 @@ def perform(
             else:
                 old_output_data[idx] = var.gpudata
 
-        # 4.6. Keep a reference to the variables (ndarrays, CudaNdarrays,
+        # 4.6. Keep a reference to the variables (ndarrays, GpuArrays,
         # etc) associated with mitmot inputs currently in the input_storage to
         # be able to compare them with the content of the input_storage after
         # the execution of the function. Also keep pointers to their data to
@@ -514,8 +514,6 @@ def perform(
             if i == 0:
                 jout = j+offset_out
                 shape = (store_steps[j],) + output_storage[jout].storage[0].shape
-                if len(output_storage[jout].storage[0].shape) == 0:
-                    vector_outs[j] = 1
                 dtype = output_storage[jout].storage[0].dtype
                 if (outs[j][0] is None or
                         outs[j][0].shape[0] < store_steps[j] or
@@ -544,7 +542,17 @@ def perform(
                     output_reused = False
 
                 if not output_reused:
-                    outs[j][0][pos[j]] = output_storage[j+offset_out].storage[0]
+                    try:
+                        outs[j][0][pos[j]] = output_storage[j+offset_out].storage[0]
+                    except ValueError as e:
+                        if i == 0:
+                            raise
+                        raise ValueError(
+                            "An output of the scan has changed shape. "
+                            "This may be caused by a pushout optimization."
+                            " Try adding "
+                            "'optimizer_excluding=scanOp_pushout_output' "
+                            "to your Theano flags.")
 
         # 5.6 Copy over the values for outputs corresponding to shared
         # variables
@@ -602,7 +610,7 @@ def perform(
             if i < n_steps:
 
 	    # Cython can not handle negative indices ( because of a
-	    # derictive at the begining of the function that says not
+	    # derictive at the beginning of the function that says not
 	    # to do boundschecks). The directive is used to make the
 	    # code faster, so this workaround is better then removing
 	    # the directive.
@@ -640,4 +648,3 @@ def perform(
     self.t_call = t_call
     self.t_fn   = t_fn
     # print 'Cython > timing', t_call, t_fn, 'in percentage', 100.*t_fn/t_call
-

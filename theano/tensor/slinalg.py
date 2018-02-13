@@ -3,7 +3,7 @@ import logging
 import warnings
 from six.moves import xrange
 
-import numpy
+import numpy as np
 
 try:
     import scipy.linalg
@@ -36,16 +36,28 @@ class Cholesky(Op):
 
     L = cholesky(X, lower=True) implies dot(L, L.T) == X.
 
+    Parameters
+    ----------
+    lower : bool, default=True
+        Whether to return the lower or upper cholesky factor
+    on_error : ['raise', 'nan']
+        If on_error is set to 'raise', this Op will raise a
+        `scipy.linalg.LinAlgError` if the matrix is not positive definite.
+        If on_error is set to 'nan', it will return a matrix containing
+        nans instead.
     """
     # TODO: inplace
     # TODO: for specific dtypes
     # TODO: LAPACK wrapper with in-place behavior, for solve also
 
-    __props__ = ('lower', 'destructive')
+    __props__ = ('lower', 'destructive', 'on_error')
 
-    def __init__(self, lower=True):
+    def __init__(self, lower=True, on_error='raise'):
         self.lower = lower
         self.destructive = False
+        if on_error not in ['raise', 'nan']:
+            raise ValueError('on_error must be one of "raise" or ""nan"')
+        self.on_error = on_error
 
     def infer_shape(self, node, shapes):
         return [shapes[0]]
@@ -60,24 +72,36 @@ class Cholesky(Op):
     def perform(self, node, inputs, outputs):
         x = inputs[0]
         z = outputs[0]
-        z[0] = scipy.linalg.cholesky(x, lower=self.lower).astype(x.dtype)
+        try:
+            z[0] = scipy.linalg.cholesky(x, lower=self.lower).astype(x.dtype)
+        except scipy.linalg.LinAlgError:
+            if self.on_error == 'raise':
+                raise
+            else:
+                z[0] = (np.zeros(x.shape) * np.nan).astype(x.dtype)
 
-    def grad(self, inputs, gradients):
+    def L_op(self, inputs, outputs, gradients):
         """
         Cholesky decomposition reverse-mode gradient update.
 
-        Symbolic expression for reverse-mode Cholesky gradient taken from [0]_
+        Symbolic expression for reverse-mode Cholesky gradient taken from [#]_
 
         References
         ----------
-        .. [0] I. Murray, "Differentiation of the Cholesky decomposition",
+        .. [#] I. Murray, "Differentiation of the Cholesky decomposition",
            http://arxiv.org/abs/1602.07527
 
         """
 
-        x = inputs[0]
         dz = gradients[0]
-        chol_x = self(x)
+        chol_x = outputs[0]
+
+        # Replace the cholesky decomposition with 1 if there are nans
+        # or solve_upper_triangular will throw a ValueError.
+        if self.on_error == 'nan':
+            ok = ~tensor.any(tensor.isnan(chol_x))
+            chol_x = tensor.switch(ok, chol_x, 1)
+            dz = tensor.switch(ok, dz, 1)
 
         # deal with upper triangular by converting to lower triangular
         if not self.lower:
@@ -97,9 +121,14 @@ class Cholesky(Op):
             chol_x, tril_and_halve_diagonal(chol_x.T.dot(dz)))
 
         if self.lower:
-            return [tensor.tril(s + s.T) - tensor.diag(tensor.diagonal(s))]
+            grad = tensor.tril(s + s.T) - tensor.diag(tensor.diagonal(s))
         else:
-            return [tensor.triu(s + s.T) - tensor.diag(tensor.diagonal(s))]
+            grad = tensor.triu(s + s.T) - tensor.diag(tensor.diagonal(s))
+
+        if self.on_error == 'nan':
+            return [tensor.switch(ok, grad, np.nan)]
+        else:
+            return [grad]
 
 cholesky = Cholesky()
 
@@ -128,12 +157,12 @@ class CholeskyGrad(Op):
 
     def perform(self, node, inputs, outputs):
         """
-        Implements the "reverse-mode" gradient [1]_ for the
+        Implements the "reverse-mode" gradient [#]_ for the
         Cholesky factorization of a positive-definite matrix.
 
         References
         ----------
-        .. [1] S. P. Smith. "Differentiation of the Cholesky Algorithm".
+        .. [#] S. P. Smith. "Differentiation of the Cholesky Algorithm".
            Journal of Computational and Graphical Statistics,
            Vol. 4, No. 2 (Jun.,1995), pp. 134-147
            http://www.jstor.org/stable/1390762
@@ -145,7 +174,7 @@ class CholeskyGrad(Op):
         dx = outputs[0]
         N = x.shape[0]
         if self.lower:
-            F = numpy.tril(dz)
+            F = np.tril(dz)
             for k in xrange(N - 1, -1, -1):
                 for j in xrange(k + 1, N):
                     for i in xrange(j, N):
@@ -156,7 +185,7 @@ class CholeskyGrad(Op):
                     F[k, k] -= L[j, k] * F[j, k]
                 F[k, k] /= (2 * L[k, k])
         else:
-            F = numpy.triu(dz)
+            F = np.triu(dz)
             for k in xrange(N - 1, -1, -1):
                 for j in xrange(k + 1, N):
                     for i in xrange(j, N):
@@ -176,6 +205,7 @@ class Solve(Op):
     """
     Solve a system of linear equations.
 
+    For on CPU and GPU.
     """
 
     __props__ = ('A_structure', 'lower', 'overwrite_A', 'overwrite_b')
@@ -202,10 +232,16 @@ class Solve(Op):
         b = as_tensor_variable(b)
         assert A.ndim == 2
         assert b.ndim in [1, 2]
-        otype = tensor.tensor(
+
+        # infer dtype by solving the most simple
+        # case with (1, 1) matrices
+        o_dtype = scipy.linalg.solve(
+            np.eye(1).astype(A.dtype),
+            np.eye(1).astype(b.dtype)).dtype
+        x = tensor.tensor(
             broadcastable=b.broadcastable,
-            dtype=(A * b).dtype)
-        return Apply(self, [A, b], [otype])
+            dtype=o_dtype)
+        return Apply(self, [A, b], [x])
 
     def perform(self, node, inputs, output_storage):
         A, b = inputs
@@ -229,21 +265,21 @@ class Solve(Op):
             cols = Bshape[1]  # b is a Matrix
             return [(rows, cols)]
 
-    def grad(self, inputs, output_gradients):
+    def L_op(self, inputs, outputs, output_gradients):
         """
-        Reverse-mode gradient updates for matrix solve operation c = A \ b.
+        Reverse-mode gradient updates for matrix solve operation c = A \\\ b.
 
-        Symbolic expression for updates taken from [1]_.
+        Symbolic expression for updates taken from [#]_.
 
         References
         ----------
-        ..[1] M. B. Giles, "An extended collection of matrix derivative results
+        .. [#] M. B. Giles, "An extended collection of matrix derivative results
           for forward and reverse mode automatic differentiation",
           http://eprints.maths.ox.ac.uk/1079/
 
         """
         A, b = inputs
-        c = self(A, b)
+        c = outputs[0]
         c_bar = output_gradients[0]
         trans_map = {
             'lower_triangular': 'upper_triangular',
@@ -263,10 +299,34 @@ class Solve(Op):
             A_bar = tensor.triu(A_bar)
         return [A_bar, b_bar]
 
-solve = Solve()  # general solve
+solve = Solve()
+"""
+Solves the equation ``a x = b`` for x, where ``a`` is a matrix and
+``b`` can be either a vector or a matrix.
+
+Note
+
+Parameters
+----------
+a : `(M, M) symbolix matrix`
+    A square matrix
+b : `(M,) or (M, N) symbolic vector or matrix`
+    Right hand side matrix in ``a x = b``
+
+
+Returns
+-------
+x : `(M, ) or (M, N) symbolic vector or matrix`
+    x will have the same shape as b
+"""
 # lower and upper triangular solves
 solve_lower_triangular = Solve(A_structure='lower_triangular', lower=True)
+"""Optimized implementation of :func:`theano.tensor.slinalg.solve` when A is lower triangular."""
 solve_upper_triangular = Solve(A_structure='upper_triangular', lower=False)
+"""Optimized implementation of :func:`theano.tensor.slinalg.solve` when A is upper triangular."""
+# symmetric solves
+solve_symmetric = Solve(A_structure='symmetric')
+"""Optimized implementation of :func:`theano.tensor.slinalg.solve` when A is symmetric."""
 
 # TODO: Optimizations to replace multiplication by matrix inverse
 #      with solve() Op (still unwritten)
@@ -343,11 +403,11 @@ class EigvalshGrad(Op):
         assert lower in [True, False]
         self.lower = lower
         if lower:
-            self.tri0 = numpy.tril
-            self.tri1 = lambda a: numpy.triu(a, 1)
+            self.tri0 = np.tril
+            self.tri1 = lambda a: np.triu(a, 1)
         else:
-            self.tri0 = numpy.triu
-            self.tri1 = lambda a: numpy.tril(a, -1)
+            self.tri0 = np.triu
+            self.tri1 = lambda a: np.tril(a, -1)
 
     def make_node(self, a, b, gw):
         assert imported_scipy, (
@@ -367,14 +427,14 @@ class EigvalshGrad(Op):
     def perform(self, node, inputs, outputs):
         (a, b, gw) = inputs
         w, v = scipy.linalg.eigh(a, b, lower=self.lower)
-        gA = v.dot(numpy.diag(gw).dot(v.T))
-        gB = - v.dot(numpy.diag(gw * w).dot(v.T))
+        gA = v.dot(np.diag(gw).dot(v.T))
+        gB = - v.dot(np.diag(gw * w).dot(v.T))
 
         # See EighGrad comments for an explanation of these lines
         out1 = self.tri0(gA) + self.tri1(gA).T
         out2 = self.tri0(gB) + self.tri1(gB).T
-        outputs[0][0] = numpy.asarray(out1, dtype=node.outputs[0].dtype)
-        outputs[1][0] = numpy.asarray(out2, dtype=node.outputs[1].dtype)
+        outputs[0][0] = np.asarray(out1, dtype=node.outputs[0].dtype)
+        outputs[1][0] = np.asarray(out2, dtype=node.outputs[1].dtype)
 
     def infer_shape(self, node, shapes):
         return [shapes[0], shapes[1]]
@@ -483,13 +543,13 @@ class ExpmGrad(Op):
         w, V = scipy.linalg.eig(A, right=True)
         U = scipy.linalg.inv(V).T
 
-        exp_w = numpy.exp(w)
-        X = numpy.subtract.outer(exp_w, exp_w) / numpy.subtract.outer(w, w)
-        numpy.fill_diagonal(X, exp_w)
+        exp_w = np.exp(w)
+        X = np.subtract.outer(exp_w, exp_w) / np.subtract.outer(w, w)
+        np.fill_diagonal(X, exp_w)
         Y = U.dot(V.T.dot(gA).dot(U) * X).dot(V.T)
 
         with warnings.catch_warnings():
-            warnings.simplefilter("ignore", numpy.ComplexWarning)
+            warnings.simplefilter("ignore", np.ComplexWarning)
             out[0] = Y.astype(A.dtype)
 
 

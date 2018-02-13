@@ -15,7 +15,7 @@ There are four kinds of BLAS Ops in Theano:
     - Python implementations (this file)
     - SciPy-based (blas_scipy)
     - C-based (blas_c)
-    - CUDA-based (theano.sandbox.cuda.blas)
+    - GPU-based (theano.gpuarray)
 
 Notes
 -----
@@ -130,10 +130,10 @@ import logging
 import os
 import time
 
-import numpy
+import numpy as np
 import numpy.distutils
 try:
-    import numpy.distutils.__config__
+    import numpy.distutils.__config__  # noqa
 except ImportError:
     pass
 
@@ -145,9 +145,12 @@ from theano.gof import (utils, Op, view_roots,
                         InconsistencyError, toolbox, SequenceDB,
                         EquilibriumOptimizer, Apply,
                         ReplacementDidntRemovedError)
+from theano.gof.params_type import ParamsType
+from theano.gof.opt import inherit_stack_trace
 from theano.printing import pprint, FunctionPrinter, debugprint
 from theano.compile.mode import optdb
 import theano.scalar
+from theano.scalar import bool as bool_t
 from theano.tensor import basic as T
 from theano.tensor.blas_headers import blas_header_text
 from theano.tensor.blas_headers import blas_header_version
@@ -166,10 +169,10 @@ try:
         # `scipy.linalg.blas.fblas` with `scipy.linalg.blas`.
         # See http://github.com/scipy/scipy/pull/358
         fblas = scipy.linalg.blas
-    _blas_gemv_fns = {numpy.dtype('float32'): fblas.sgemv,
-                      numpy.dtype('float64'): fblas.dgemv,
-                      numpy.dtype('complex64'): fblas.cgemv,
-                      numpy.dtype('complex128'): fblas.zgemv}
+    _blas_gemv_fns = {np.dtype('float32'): fblas.sgemv,
+                      np.dtype('float64'): fblas.dgemv,
+                      np.dtype('complex64'): fblas.cgemv,
+                      np.dtype('complex128'): fblas.zgemv}
 except ImportError as e:
     have_fblas = False
     # This is used in Gemv and ScipyGer. We use CGemv and CGer
@@ -190,12 +193,12 @@ def check_init_y():
         if not have_fblas:
             check_init_y._result = False
 
-        y = float('NaN') * numpy.ones((2,))
-        x = numpy.ones((2,))
-        A = numpy.ones((2, 2))
+        y = float('NaN') * np.ones((2,))
+        x = np.ones((2,))
+        A = np.ones((2, 2))
         gemv = _blas_gemv_fns[y.dtype]
         gemv(1.0, A.T, x, 0.0, y, overwrite_y=True, trans=True)
-        check_init_y._result = numpy.isnan(y).any()
+        check_init_y._result = np.isnan(y).any()
 
     return check_init_y._result
 
@@ -243,7 +246,7 @@ class Gemv(Op):
             raise TypeError('gemv requires vector for y', y.type)
         return Apply(self, [y, alpha, A, x, beta], [y.type()])
 
-    def perform(self, node, inputs, out_storage):
+    def perform(self, node, inputs, out_storage, params=None):
         y, alpha, A, x, beta = inputs
         if (have_fblas and y.shape[0] != 0 and x.shape[0] != 0 and
                 y.dtype in _blas_gemv_fns):
@@ -269,7 +272,7 @@ class Gemv(Op):
             out_storage[0][0] = gemv(alpha, A.T, x, beta, y,
                                      overwrite_y=self.inplace, trans=True)
         else:
-            out = numpy.dot(A, x)
+            out = np.dot(A, x)
             if alpha != 1:
                 out *= alpha
             if beta != 0:
@@ -277,7 +280,7 @@ class Gemv(Op):
                     out += beta * y
                 else:
                     out += y
-            out_storage[0][0] = numpy.asarray(out, dtype=y.dtype)
+            out_storage[0][0] = np.asarray(out, dtype=y.dtype)
 
     def infer_shape(self, node, input_shapes):
         return [input_shapes[0]]
@@ -296,9 +299,6 @@ class Ger(Op):
 
     This interface to GER allows non-destructive operation on A via the
     `destructive` argument to the constructor.
-
-    :TODO: Create better classes ScipyGer and CGer that inherit from this class
-    and override the make_thunk() method to use Scipy and C respectively.
 
     """
 
@@ -320,7 +320,7 @@ class Ger(Op):
         y = T.as_tensor_variable(y)
         x = T.as_tensor_variable(x)
         alpha = T.as_tensor_variable(alpha)
-        if len(set([A.dtype, alpha.dtype, x.dtype, y.dtype])) != 1:
+        if not(A.dtype == x.dtype == y.dtype == alpha.dtype):
             raise TypeError('ger requires matching dtypes',
                             (A.dtype, alpha.dtype, x.dtype, y.dtype))
         if alpha.ndim != 0:
@@ -336,7 +336,7 @@ class Ger(Op):
             raise TypeError('only float and complex types supported', x.dtype)
         return Apply(self, [A, alpha, x, y], [A.type()])
 
-    def perform(self, node, inp, out):
+    def perform(self, node, inp, out, params=None):
         cA, calpha, cx, cy = inp
         cZ, = out
         if self.destructive:
@@ -344,9 +344,9 @@ class Ger(Op):
         else:
             A = cA.copy()
         if calpha != 1:
-            A += calpha * numpy.outer(cx, cy)
+            A += calpha * np.outer(cx, cy)
         else:
-            A += numpy.outer(cx, cy)
+            A += np.outer(cx, cy)
         cZ[0] = A
 
     def infer_shape(self, node, input_shapes):
@@ -423,23 +423,21 @@ def _ldflags(ldflags_str, libs, flags, libs_dir, include_dir):
         l = _ldflags(ldflags_str=ldflags_str, libs=True,
                      flags=False, libs_dir=False, include_dir=False)
         for d in dirs:
-            for f in os.listdir(d):
+            for f in os.listdir(d.strip('"')):
                 if (f.endswith('.so') or f.endswith('.dylib') or
                         f.endswith('.dll')):
                     if any([f.find(ll) >= 0 for ll in l]):
                         found_dyn = True
         if not found_dyn and dirs:
             _logger.warning(
-                "We did not found a dynamic library into the "
+                "We did not find a dynamic library in the "
                 "library_dir of the library we use for blas. If you use "
                 "ATLAS, make sure to compile it with dynamics library.")
 
     for t in ldflags_str.split():
         # Remove extra quote.
-        if t.startswith("'") or t.startswith('"'):
-            t = t[1:]
-        if t.endswith("'") or t.endswith('"'):
-            t = t[:-1]
+        if (t.startswith("'") and t.endswith("'")) or (t.startswith('"') and t.endswith('"')):
+            t = t[1:-1]
 
         try:
             t0, t1, t2 = t[0:3]
@@ -527,7 +525,11 @@ class GemmRelated(Op):
         int sx_0, sx_1, sy_0, sy_1, sz_0, sz_1;
         """
 
+    # implement if you don't have an inplace props
     # setup_z_Nz_Sz = None
+    # otherwise implement
+    # setup_z_Nz_Sz_inplace = None
+    # setup_z_Nz_Sz_outplace = None
 
     check_xyz_rank2 = """
         if (PyArray_NDIM(%(_x)s) != 2) {
@@ -760,11 +762,16 @@ class GemmRelated(Op):
         """
 
     def build_gemm_call(self):
+        if hasattr(self, 'inplace'):
+            setup_z_Nz_Sz = "if(%%(params)s->inplace){%s}else{%s}" % (
+                self.setup_z_Nz_Sz_inplace, self.setup_z_Nz_Sz_outplace)
+        else:
+            setup_z_Nz_Sz = self.setup_z_Nz_Sz
 
         return reduce(str.__add__, (
             self.declare_NS,
             self.check_xyz_rank2,
-            self.setup_z_Nz_Sz,
+            setup_z_Nz_Sz,
             self.check_xyz_double_or_float,
             self.check_ab_double_or_float,
             self.check_dims,
@@ -814,14 +821,13 @@ class Gemm(GemmRelated):
     E_float = 'gemm requires floating-point dtypes'
 
     __props__ = ('inplace',)
+    params_type = ParamsType(inplace=bool_t,)
+    check_input = False
 
     def __init__(self, inplace):
         self.inplace = inplace
         if self.inplace:
             self.destroy_map = {0: [0]}
-            self.setup_z_Nz_Sz = self.setup_z_Nz_Sz_inplace
-        else:
-            self.setup_z_Nz_Sz = self.setup_z_Nz_Sz_outplace
 
     def __str__(self):
         if self.inplace:
@@ -832,15 +838,9 @@ class Gemm(GemmRelated):
 
     def __setstate__(self, dct):
         self.__dict__.update(dct)
-        if self.inplace:
-            self.setup_z_Nz_Sz = self.setup_z_Nz_Sz_inplace
-        else:
-            self.setup_z_Nz_Sz = self.setup_z_Nz_Sz_outplace
 
-        # Correctly reload older pickles where _op_use_c_code and
-        # destroy_map were not saved
-        if '_op_use_c_code' not in self.__dict__:
-            self._op_use_c_code = theano.config.cxx
+        # Correctly reload older pickles where destroy_map were not
+        # saved
         if 'destroy_map' not in self.__dict__ and self.inplace:
             self.destroy_map = {0: [0]}
 
@@ -848,7 +848,7 @@ class Gemm(GemmRelated):
         rval = self.__dict__.copy()
         # Do not serialize the setup code, it will be restored in __setstate__
         # depending on the value of 'inplace'
-        rval.pop('setup_z_Nz_Sz')
+        rval.pop('setup_z_Nz_Sz', None)
         return rval
 
     def make_node(self, *inputs):
@@ -859,9 +859,6 @@ class Gemm(GemmRelated):
                 (self, len(inputs)))
         z, a, x, y, b = inputs
 
-        # For the consistency check we don't want z to be a cached constant.
-        if getattr(z, 'cached', False):
-            z = copy.copy(z)
         zr, xr, yr = [set(view_roots(i)) for i in (z, x, y)]
 
         # We want the gemm to be inplace. When this op is inplace, it
@@ -874,10 +871,11 @@ class Gemm(GemmRelated):
         # think there is another mechanism that would prevent this,
         # but I don't what to modify old code and have chance to break
         # something.
-        if zr.intersection(xr):
-            raise InconsistencyError(Gemm.E_z_uniq, (z, x))
-        if zr.intersection(yr):
-            raise InconsistencyError(Gemm.E_z_uniq, (z, y))
+        if self.inplace:
+            if zr.intersection(xr):
+                raise InconsistencyError(Gemm.E_z_uniq, (z, x))
+            if zr.intersection(yr):
+                raise InconsistencyError(Gemm.E_z_uniq, (z, y))
 
         if z.ndim != 2:
             raise TypeError(Gemm.E_rank, z)
@@ -901,34 +899,34 @@ class Gemm(GemmRelated):
         output = z.type()
         return Apply(self, inputs, [output])
 
-    def perform(self, node, inp, out):
+    def perform(self, node, inp, out, params):
         z, a, x, y, b = inp
         zout, = out
         assert a.shape == ()
         assert b.shape == ()
-        if not self.inplace:
+        if not params.inplace:
             z = z.copy()  # the original z will not be changed
         if z.shape == ():
-            z.itemset(z * a + b * numpy.dot(x, y))
+            z.itemset(z * a + b * np.dot(x, y))
             zout[0] = z
         else:
             if b == 0.0:
                 if a == 1.0:
-                    z[:] = numpy.dot(x, y)
+                    z[:] = np.dot(x, y)
                 elif a == -1.0:
-                    z[:] = -numpy.dot(x, y)
+                    z[:] = -np.dot(x, y)
                 else:
-                    z[:] = a * numpy.dot(x, y)
+                    z[:] = a * np.dot(x, y)
             elif b == 1.0:
                 if a == 1.0:
-                    z += numpy.dot(x, y)
+                    z += np.dot(x, y)
                 elif a == -1.0:
-                    z -= numpy.dot(x, y)
+                    z -= np.dot(x, y)
                 else:
-                    z += a * numpy.dot(x, y)
+                    z += a * np.dot(x, y)
             else:
                 z *= b
-                z += a * numpy.dot(x, y)
+                z += a * np.dot(x, y)
             zout[0] = z
 
     def infer_shape(self, node, input_shapes):
@@ -1042,17 +1040,13 @@ class Gemm(GemmRelated):
         if node.inputs[0].type.dtype.startswith('complex'):
             raise utils.MethodNotDefined('%s.c_code'
                                          % self.__class__.__name__)
-        if not config.blas.ldflags:
-            return super(Gemm, self).c_code(node, name,
-                                            (_z, _a, _x, _y, _b), (_zout, ),
-                                            sub)
         full_code = self.build_gemm_call() % dict(locals(), **sub)
         return full_code
 
     def c_code_cache_version(self):
         gv = self.build_gemm_version()
         if gv:
-            return (5,) + gv
+            return (6,) + gv
         else:
             return gv
 
@@ -1079,7 +1073,7 @@ def _as_scalar(res, dtype=None):
     """Return None or a TensorVariable whose type is in T.float_scalar_types"""
     if dtype is None:
         dtype = config.floatX
-    if numpy.all(res.type.broadcastable):
+    if np.all(res.type.broadcastable):
         while res.owner and isinstance(res.owner.op, T.DimShuffle):
             res = res.owner.inputs[0]
         # may still have some number of True's
@@ -1087,7 +1081,7 @@ def _as_scalar(res, dtype=None):
             rval = res.dimshuffle()
         else:
             rval = res
-        if rval.type.dtype[:3] in ('int', 'uin'):
+        if rval.type.dtype in theano.tensor.integer_dtypes:
             # We check that the upcast of res and dtype won't change dtype.
             # If dtype is float64, we will cast int64 to float64.
             # This is valid when res is a scalar used as input to a dot22
@@ -1102,14 +1096,14 @@ def _as_scalar(res, dtype=None):
 
 
 def _is_real_matrix(res):
-    return (res.type.dtype in ('float32', 'float64') and
+    return (res.type.dtype in ('float16', 'float32', 'float64') and
             res.type.ndim == 2 and
             res.type.broadcastable[0] is False and
             res.type.broadcastable[1] is False)  # cope with tuple vs. list
 
 
 def _is_real_vector(res):
-    return (res.type.dtype in ('float32', 'float64') and
+    return (res.type.dtype in ('float16', 'float32', 'float64') and
             res.type.ndim == 1 and
             res.type.broadcastable[0] is False)
 
@@ -1194,7 +1188,7 @@ def _gemm_canonicalize(r, scale, rval, maxclients):
     def scaled(thing):
         if scale == 1:
             return thing
-        if scale == -1:
+        if scale == -1 and thing.type.dtype != 'bool':
             return -thing
         else:
             return scale * thing
@@ -1204,7 +1198,7 @@ def _gemm_canonicalize(r, scale, rval, maxclients):
         return None
 
     if ((r.type.ndim not in (1, 2)) or
-            r.type.dtype not in ('float32', 'float64',
+            r.type.dtype not in ('float16', 'float32', 'float64',
                                  'complex64', 'complex128')):
         rval.append(scaled(r))
         return rval
@@ -1229,7 +1223,7 @@ def _gemm_canonicalize(r, scale, rval, maxclients):
         vectors = []
         matrices = []
         for i in r.owner.inputs:
-            if numpy.all(i.type.broadcastable):
+            if np.all(i.type.broadcastable):
                 while i.owner and isinstance(i.owner.op, T.DimShuffle):
                     i = i.owner.inputs[0]
                 if i.type.broadcastable:
@@ -1367,7 +1361,7 @@ def _gemm_from_factored_list(lst):
                     rval = [T.add(*add_inputs)]
                 else:
                     rval = add_inputs
-                # print "RETURNING GEMM THIGN", rval
+                # print "RETURNING GEMM THING", rval
                 return rval, old_dot22
 
 
@@ -1535,9 +1529,12 @@ class Dot22(GemmRelated):
     This is a specialization of the more general Dot().
 
     """
+    check_input = False
 
     def make_node(self, x, y):
-        dtypes = ('float32', 'float64', 'complex64', 'complex128')
+        x = T.as_tensor_variable(x)
+        y = T.as_tensor_variable(y)
+        dtypes = ('float16', 'float32', 'float64', 'complex64', 'complex128')
         if x.type.ndim != 2 or x.type.dtype not in dtypes:
             raise TypeError(x)
         if y.type.ndim != 2 or y.type.dtype not in dtypes:
@@ -1552,7 +1549,7 @@ class Dot22(GemmRelated):
         x, y = inp
         z, = out
         try:
-            z[0] = numpy.asarray(numpy.dot(x, y))
+            z[0] = np.asarray(np.dot(x, y))
         except ValueError as e:
             # The error raised by numpy has no shape information, we mean to
             # add that
@@ -1630,20 +1627,17 @@ def local_dot_to_dot22(node):
                      x, y, x.type, y.type)
         return
 
-    if y.type.dtype in ['float32', 'float64', 'complex64', 'complex128']:
-        if x.ndim == 2 and y.ndim == 2:
-            # print "local_dot_to_dot22: MM"
-            return [_dot22(*node.inputs)]
-        if x.ndim == 2 and y.ndim == 1:
-            # print "local_dot_to_dot22: MV"
-            return [_dot22(x, y.dimshuffle(0, 'x')).dimshuffle(0)]
-        if x.ndim == 1 and y.ndim == 2:
-            # print "local_dot_to_dot22: VM"
-            return [_dot22(x.dimshuffle('x', 0), y).dimshuffle(1)]
-        if x.ndim == 1 and y.ndim == 1:
-            # print "local_dot_to_dot22: VV"
-            return [_dot22(x.dimshuffle('x', 0),
-                           y.dimshuffle(0, 'x')).dimshuffle()]
+    if y.type.dtype in ['float16', 'float32', 'float64', 'complex64', 'complex128']:
+        with inherit_stack_trace(node.outputs):
+            if x.ndim == 2 and y.ndim == 2:
+                return [_dot22(*node.inputs)]
+            if x.ndim == 2 and y.ndim == 1:
+                return [_dot22(x, y.dimshuffle(0, 'x')).dimshuffle(0)]
+            if x.ndim == 1 and y.ndim == 2:
+                return [_dot22(x.dimshuffle('x', 0), y).dimshuffle(1)]
+            if x.ndim == 1 and y.ndim == 1:
+                return [_dot22(x.dimshuffle('x', 0),
+                               y.dimshuffle(0, 'x')).dimshuffle()]
 
     _logger.info('Not optimizing dot with inputs %s %s %s %s',
                  x, y, x.type, y.type)
@@ -1652,19 +1646,22 @@ def local_dot_to_dot22(node):
 @local_optimizer([gemm_no_inplace], inplace=True)
 def local_inplace_gemm(node):
     if node.op == gemm_no_inplace:
-        return [gemm_inplace(*node.inputs)]
+        with inherit_stack_trace(node.outputs):
+            return [gemm_inplace(*node.inputs)]
 
 
 @local_optimizer([gemv_no_inplace], inplace=True)
 def local_inplace_gemv(node):
     if node.op == gemv_no_inplace:
-        return [gemv_inplace(*node.inputs)]
+        with inherit_stack_trace(node.outputs):
+            return [gemv_inplace(*node.inputs)]
 
 
 @local_optimizer([ger], inplace=True)
 def local_inplace_ger(node):
     if node.op == ger:
-        return [ger_destructive(*node.inputs)]
+        with inherit_stack_trace(node.outputs):
+            return [ger_destructive(*node.inputs)]
 
 
 @local_optimizer([gemm_no_inplace])
@@ -1672,12 +1669,13 @@ def local_gemm_to_gemv(node):
     """GEMM acting on row or column matrices -> GEMV."""
     if node.op == gemm_no_inplace:
         z, a, x, y, b = node.inputs
-        if z.broadcastable == x.broadcastable == (True, False):
-            r = gemv_no_inplace(z.dimshuffle(1), a, y.T, x.dimshuffle(1), b)
-            return [r.dimshuffle('x', 0)]
-        if z.broadcastable == y.broadcastable == (False, True):
-            r = gemv_no_inplace(z.dimshuffle(0), a, x, y.dimshuffle(0), b)
-            return [r.dimshuffle(0, 'x')]
+        with inherit_stack_trace(node.outputs):
+            if z.broadcastable == x.broadcastable == (True, False):
+                r = gemv_no_inplace(z.dimshuffle(1), a, y.T, x.dimshuffle(1), b)
+                return [r.dimshuffle('x', 0)]
+            if z.broadcastable == y.broadcastable == (False, True):
+                r = gemv_no_inplace(z.dimshuffle(0), a, x, y.dimshuffle(0), b)
+                return [r.dimshuffle(0, 'x')]
 
 
 @local_optimizer([gemm_no_inplace])
@@ -1686,26 +1684,27 @@ def local_gemm_to_ger(node):
     if node.op == gemm_no_inplace:
         z, a, x, y, b = node.inputs
         if x.broadcastable[1] and y.broadcastable[0]:
-            # x and y are both vectors so this might qualifies for a GER
-            xv = x.dimshuffle(0)
-            yv = y.dimshuffle(1)
-            try:
-                bval = T.get_scalar_constant_value(b)
-            except T.NotScalarConstantError:
-                # b isn't a constant, GEMM is doing useful pre-scaling
-                return
+            with inherit_stack_trace(node.outputs):
+                # x and y are both vectors so this might qualifies for a GER
+                xv = x.dimshuffle(0)
+                yv = y.dimshuffle(1)
+                try:
+                    bval = T.get_scalar_constant_value(b)
+                except T.NotScalarConstantError:
+                    # b isn't a constant, GEMM is doing useful pre-scaling
+                    return
 
-            if bval == 1:   # best case a natural GER
-                rval = ger(z, a, xv, yv)
-                return [rval]
-            elif bval == 0:   # GER on zeros_like should be faster than GEMM
-                zeros = T.zeros([x.shape[0], y.shape[1]], x.dtype)
-                rval = ger(zeros, a, xv, yv)
-                return [rval]
-            else:
-                # if bval is another constant, then z is being usefully
-                # pre-scaled and GER isn't really the right tool for the job.
-                return
+                if bval == 1:   # best case a natural GER
+                    rval = ger(z, a, xv, yv)
+                    return [rval]
+                elif bval == 0:   # GER on zeros_like should be faster than GEMM
+                    zeros = T.zeros([x.shape[0], y.shape[1]], x.dtype)
+                    rval = ger(zeros, a, xv, yv)
+                    return [rval]
+                else:
+                    # if bval is another constant, then z is being usefully
+                    # pre-scaled and GER isn't really the right tool for the job.
+                    return
 
 
 # TODO: delete this optimization when we have the proper dot->gemm->ger pipeline
@@ -1714,37 +1713,38 @@ def local_gemm_to_ger(node):
 def local_dot22_to_ger_or_gemv(node):
     """dot22 computing an outer-product -> GER."""
     if node.op == _dot22:
-        x, y = node.inputs
-        xb = x.broadcastable
-        yb = y.broadcastable
-        one = T.as_tensor_variable(numpy.asarray(1, dtype=x.dtype))
-        zero = T.as_tensor_variable(numpy.asarray(0, dtype=x.dtype))
-        if xb[1] and yb[0]:
-            # x and y are both vectors so this might qualifies for a GER
-            xv = x.dimshuffle(0)
-            yv = y.dimshuffle(1)
-            zeros = T.zeros([x.shape[0], y.shape[1]], dtype=x.dtype)
-            rval = ger(zeros, one, xv, yv)
-            return [rval]
-        if xb[0] and yb[1]:
-            # x and y are both vectors so this qualifies for a sdot / ddot
-            # TODO: Theano doesn't have a sdot, but gemv is better than _dot22
-            xv = x.dimshuffle(1)
-            zeros = T.AllocEmpty(x.dtype)(1)
-            rval = gemv_no_inplace(zeros, one, y.T, xv, zero)
-            return [rval.dimshuffle('x', 0)]
-        if xb[0] and not yb[0] and not yb[1]:
-            # x is vector, y is matrix so try gemv
-            xv = x.dimshuffle(1)
-            zeros = T.AllocEmpty(x.dtype)(y.shape[1])
-            rval = gemv_no_inplace(zeros, one, y.T, xv, zero)
-            return [rval.dimshuffle('x', 0)]
-        if not xb[0] and not xb[1] and yb[1]:
-            # x is matrix, y is vector, try gemv
-            yv = y.dimshuffle(0)
-            zeros = T.AllocEmpty(x.dtype)(x.shape[0])
-            rval = gemv_no_inplace(zeros, one, x, yv, zero)
-            return [rval.dimshuffle(0, 'x')]
+        with inherit_stack_trace(node.outputs):
+            x, y = node.inputs
+            xb = x.broadcastable
+            yb = y.broadcastable
+            one = T.as_tensor_variable(np.asarray(1, dtype=x.dtype))
+            zero = T.as_tensor_variable(np.asarray(0, dtype=x.dtype))
+            if xb[1] and yb[0]:
+                # x and y are both vectors so this might qualifies for a GER
+                xv = x.dimshuffle(0)
+                yv = y.dimshuffle(1)
+                zeros = T.zeros([x.shape[0], y.shape[1]], dtype=x.dtype)
+                rval = ger(zeros, one, xv, yv)
+                return [rval]
+            if xb[0] and yb[1]:
+                # x and y are both vectors so this qualifies for a sdot / ddot
+                # TODO: Theano doesn't have a sdot, but gemv is better than _dot22
+                xv = x.dimshuffle(1)
+                zeros = T.AllocEmpty(x.dtype)(1)
+                rval = gemv_no_inplace(zeros, one, y.T, xv, zero)
+                return [rval.dimshuffle('x', 0)]
+            if xb[0] and not yb[0] and not yb[1]:
+                # x is vector, y is matrix so try gemv
+                xv = x.dimshuffle(1)
+                zeros = T.AllocEmpty(x.dtype)(y.shape[1])
+                rval = gemv_no_inplace(zeros, one, y.T, xv, zero)
+                return [rval.dimshuffle('x', 0)]
+            if not xb[0] and not xb[1] and yb[1]:
+                # x is matrix, y is vector, try gemv
+                yv = y.dimshuffle(0)
+                zeros = T.AllocEmpty(x.dtype)(x.shape[0])
+                rval = gemv_no_inplace(zeros, one, x, yv, zero)
+                return [rval.dimshuffle(0, 'x')]
 
 
 #################################
@@ -1797,6 +1797,7 @@ class Dot22Scalar(GemmRelated):
     compute scalar*dot(x,y).
 
     """
+    check_input = False
 
     def make_node(self, x, y, a):
         if a.ndim != 0:
@@ -1823,7 +1824,7 @@ class Dot22Scalar(GemmRelated):
         x, y, scalar = inp
         z, = out
         try:
-            z[0] = numpy.asarray(scalar * numpy.dot(x, y))
+            z[0] = np.asarray(scalar * np.dot(x, y))
         except ValueError as e:
             # The error raised by numpy has no shape information, we
             # mean to add that
@@ -2047,15 +2048,16 @@ class BatchedDot(Op):
 
         shape = self.infer_shape(node, [i.shape for i in inp])[0]
         dtype = node.outputs[0].dtype
-        z0 = z[0] = numpy.empty(shape, dtype=dtype)
+        z0 = z[0] = np.empty(shape, dtype=dtype)
         for i in xrange(z0.shape[0]):
-            z0[i] = numpy.dot(x[i], y[i])
+            z0[i] = np.dot(x[i], y[i])
 
     def c_support_code(self):
         batch_gemm_defn = """
-        template<typename dtype, typename function>
-        bool batch_gemm(function gemm, int type_size,
-                        PyArrayObject* xs, PyArrayObject* ys, PyArrayObject* zs) {
+        template<typename dtype>
+        bool batch_gemm(void (*gemm)(char*, char*, const int*, const int*, const int*, const dtype*, const dtype*, const int*, const dtype*, const int*, const dtype*, dtype*, const int*),
+                        int type_size, PyArrayObject* xs, PyArrayObject* ys,
+                        PyArrayObject* zs) {
             npy_intp *Nx = PyArray_DIMS(xs), *Sx = PyArray_STRIDES(xs);
             npy_intp *Ny = PyArray_DIMS(ys), *Sy = PyArray_STRIDES(ys);
             npy_intp *Nz = PyArray_DIMS(zs), *Sz = PyArray_STRIDES(zs);
@@ -2159,18 +2161,16 @@ class BatchedDot(Op):
         _z, = out
         fail = sub["fail"]
 
-        if not config.blas.ldflags:
-            return super(BatchedDot, self).c_code(node, name,
-                                                  inp, out, sub)
-
         # generate contiguity condition
         def contiguous(var, ndim):
             strides = "PyArray_STRIDES(%s)" % var
+            if ndim == 1:
+                return "{strides}[0] == type_size".format(strides=strides)
             return " && ".join([
                 " && ".join("{strides}[{i}] > 0 && {strides}[{i}] % type_size == 0"
-                            .format(strides=strides, i=i) for i in range(ndim)),
+                            .format(strides=strides, i=i) for i in range(1, ndim)),
                 "(%s)" % " || ".join("{strides}[{i}] == type_size"
-                                     .format(strides=strides, i=i) for i in range(ndim)),
+                                     .format(strides=strides, i=i) for i in range(1, ndim)),
             ])
 
         x_ndim, y_ndim, z_ndim = node.inputs[0].ndim, node.inputs[1].ndim, node.outputs[0].ndim
@@ -2324,7 +2324,7 @@ class BatchedDot(Op):
 
     def c_code_cache_version(self):
         from theano.tensor.blas_headers import blas_header_version
-        return (1, blas_header_version())
+        return (4, blas_header_version())
 
     def grad(self, inp, grads):
         x, y = inp

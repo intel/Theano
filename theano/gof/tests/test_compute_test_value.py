@@ -4,7 +4,7 @@ import sys
 import traceback
 import warnings
 
-import numpy
+import numpy as np
 from nose.plugins.skip import SkipTest
 import unittest
 
@@ -19,7 +19,9 @@ from theano.tensor.basic import _allclose
 
 # Used in TestComputeTestValue.test_no_perform
 class IncOneC(Op):
-    """An Op with only a C (c_code) implementation"""
+    """
+    An Op with only a C (c_code) implementation
+    """
     __props__ = ()
 
     def make_node(self, input):
@@ -44,9 +46,9 @@ class TestComputeTestValue(unittest.TestCase):
             theano.config.compute_test_value = 'raise'
 
             x = T.matrix('x')
-            x.tag.test_value = numpy.random.rand(3, 4).astype(config.floatX)
+            x.tag.test_value = np.random.rand(3, 4).astype(config.floatX)
             y = T.matrix('y')
-            y.tag.test_value = numpy.random.rand(4, 5).astype(config.floatX)
+            y.tag.test_value = np.random.rand(4, 5).astype(config.floatX)
 
             # should work
             z = T.dot(x, y)
@@ -56,7 +58,7 @@ class TestComputeTestValue(unittest.TestCase):
                              z.tag.test_value)
 
             # this test should fail
-            y.tag.test_value = numpy.random.rand(6, 5).astype(config.floatX)
+            y.tag.test_value = np.random.rand(6, 5).astype(config.floatX)
             self.assertRaises(ValueError, T.dot, x, y)
         finally:
             theano.config.compute_test_value = orig_compute_test_value
@@ -66,7 +68,7 @@ class TestComputeTestValue(unittest.TestCase):
         try:
             x = T.matrix('x')
             y = T.matrix('y')
-            y.tag.test_value = numpy.random.rand(4, 5).astype(config.floatX)
+            y.tag.test_value = np.random.rand(4, 5).astype(config.floatX)
 
             # should skip computation of test value
             theano.config.compute_test_value = 'off'
@@ -96,11 +98,11 @@ class TestComputeTestValue(unittest.TestCase):
             theano.config.compute_test_value = 'raise'
 
             x = T.matrix('x')
-            x.tag.test_value = numpy.random.rand(3, 4).astype(config.floatX)
+            x.tag.test_value = np.random.rand(3, 4).astype(config.floatX)
             y = T.matrix('y')
-            y.tag.test_value = numpy.random.rand(4, 5).astype(config.floatX)
+            y.tag.test_value = np.random.rand(4, 5).astype(config.floatX)
 
-            z = theano.shared(numpy.random.rand(5, 6).astype(config.floatX))
+            z = theano.shared(np.random.rand(5, 6).astype(config.floatX))
 
             # should work
             out = T.dot(T.dot(x, y), z)
@@ -114,7 +116,7 @@ class TestComputeTestValue(unittest.TestCase):
                 return T.dot(T.dot(x, y), z)
 
             # this test should fail
-            z.set_value(numpy.random.rand(7, 6).astype(config.floatX))
+            z.set_value(np.random.rand(7, 6).astype(config.floatX))
             self.assertRaises(ValueError, f, x, y, z)
         finally:
             theano.config.compute_test_value = orig_compute_test_value
@@ -125,8 +127,8 @@ class TestComputeTestValue(unittest.TestCase):
             theano.config.compute_test_value = 'raise'
 
             x = T.matrix('x')
-            x.tag.test_value = numpy.random.rand(3, 4).astype(config.floatX)
-            y = theano.shared(numpy.random.rand(4, 6).astype(config.floatX),
+            x.tag.test_value = np.random.rand(3, 4).astype(config.floatX)
+            y = theano.shared(np.random.rand(4, 6).astype(config.floatX),
                               'y')
 
             # should work
@@ -136,7 +138,7 @@ class TestComputeTestValue(unittest.TestCase):
             assert _allclose(f(x.tag.test_value), z.tag.test_value)
 
             # this test should fail
-            y.set_value(numpy.random.rand(5, 6).astype(config.floatX))
+            y.set_value(np.random.rand(5, 6).astype(config.floatX))
             self.assertRaises(ValueError, T.dot, x, y)
         finally:
             theano.config.compute_test_value = orig_compute_test_value
@@ -146,8 +148,8 @@ class TestComputeTestValue(unittest.TestCase):
         try:
             theano.config.compute_test_value = 'raise'
 
-            x = numpy.random.rand(2, 3).astype(config.floatX)
-            y = theano.shared(numpy.random.rand(3, 6).astype(config.floatX),
+            x = np.random.rand(2, 3).astype(config.floatX)
+            y = theano.shared(np.random.rand(3, 6).astype(config.floatX),
                               'y')
 
             # should work
@@ -157,7 +159,7 @@ class TestComputeTestValue(unittest.TestCase):
             assert _allclose(f(), z.tag.test_value)
 
             # this test should fail
-            x = numpy.random.rand(2, 4).astype(config.floatX)
+            x = np.random.rand(2, 4).astype(config.floatX)
             self.assertRaises(ValueError, T.dot, x, y)
         finally:
             theano.config.compute_test_value = orig_compute_test_value
@@ -167,7 +169,7 @@ class TestComputeTestValue(unittest.TestCase):
         try:
             theano.config.compute_test_value = 'raise'
 
-            x = theano.shared(numpy.random.rand(0, 6).astype(config.floatX),
+            x = theano.shared(np.random.rand(0, 6).astype(config.floatX),
                               'x')
 
             # should work
@@ -184,8 +186,8 @@ class TestComputeTestValue(unittest.TestCase):
         try:
             theano.config.compute_test_value = 'raise'
 
-            x = T.constant(numpy.random.rand(2, 3), dtype=config.floatX)
-            y = theano.shared(numpy.random.rand(3, 6).astype(config.floatX),
+            x = T.constant(np.random.rand(2, 3), dtype=config.floatX)
+            y = theano.shared(np.random.rand(3, 6).astype(config.floatX),
                               'y')
 
             # should work
@@ -195,7 +197,7 @@ class TestComputeTestValue(unittest.TestCase):
             assert _allclose(f(), z.tag.test_value)
 
             # this test should fail
-            x = T.constant(numpy.random.rand(2, 4), dtype=config.floatX)
+            x = T.constant(np.random.rand(2, 4), dtype=config.floatX)
             self.assertRaises(ValueError, T.dot, x, y)
         finally:
             theano.config.compute_test_value = orig_compute_test_value
@@ -207,9 +209,9 @@ class TestComputeTestValue(unittest.TestCase):
 
             x = T.fmatrix('x')
             # Incorrect dtype (float64) for test_value
-            x.tag.test_value = numpy.random.rand(3, 4)
+            x.tag.test_value = np.random.rand(3, 4)
             y = T.dmatrix('y')
-            y.tag.test_value = numpy.random.rand(4, 5)
+            y.tag.test_value = np.random.rand(4, 5)
 
             self.assertRaises(TypeError, T.dot, x, y)
         finally:
@@ -222,17 +224,16 @@ class TestComputeTestValue(unittest.TestCase):
         try:
             config.compute_test_value = "raise"
             x = T.matrix()
-            x.tag.test_value = numpy.zeros((2, 3), dtype=config.floatX)
+            x.tag.test_value = np.zeros((2, 3), dtype=config.floatX)
             y = T.matrix()
-            y.tag.test_value = numpy.zeros((2, 2), dtype=config.floatX)
+            y.tag.test_value = np.zeros((2, 2), dtype=config.floatX)
             self.assertRaises(ValueError, x.__mul__, y)
         finally:
             theano.config.compute_test_value = orig_compute_test_value
 
     def test_scan(self):
-        """
-        Test the compute_test_value mechanism Scan.
-        """
+        # Test the compute_test_value mechanism Scan.
+
         orig_compute_test_value = theano.config.compute_test_value
         try:
             theano.config.compute_test_value = 'raise'
@@ -240,7 +241,7 @@ class TestComputeTestValue(unittest.TestCase):
             k = T.iscalar("k")
             A = T.vector("A")
             k.tag.test_value = 3
-            A.tag.test_value = numpy.random.rand(5).astype(config.floatX)
+            A.tag.test_value = np.random.rand(5).astype(config.floatX)
 
             def fx(prior_result, A):
                 return prior_result * A
@@ -267,7 +268,7 @@ class TestComputeTestValue(unittest.TestCase):
             k = T.iscalar("k")
             A = T.matrix("A")
             k.tag.test_value = 3
-            A.tag.test_value = numpy.random.rand(5, 3).astype(config.floatX)
+            A.tag.test_value = np.random.rand(5, 3).astype(config.floatX)
 
             def fx(prior_result, A):
                 return T.dot(prior_result, A)
@@ -304,7 +305,7 @@ class TestComputeTestValue(unittest.TestCase):
             k = T.iscalar("k")
             A = T.matrix("A")
             k.tag.test_value = 3
-            A.tag.test_value = numpy.random.rand(5, 3).astype(config.floatX)
+            A.tag.test_value = np.random.rand(5, 3).astype(config.floatX)
 
             def fx(prior_result, A):
                 return T.dot(prior_result, A)
@@ -326,19 +327,16 @@ class TestComputeTestValue(unittest.TestCase):
                     n_steps=k)
                 assert False
             except ValueError as e:
-                # The first message is for numpy before 1.6.
-                # The second is a new message in numpy 1.6.
-                assert (str(e).startswith("shape mismatch") or
-                        str(e).startswith("operands could not be broadcast "
-                                          "together with shapes") or
-                        str(e).startswith("could not broadcast input"))
+                assert (str(e).startswith("could not broadcast input")), str(e)
 
         finally:
             theano.config.compute_test_value = orig_compute_test_value
 
     def test_no_c_code(self):
         class IncOnePython(Op):
-            """An Op with only a Python (perform) implementation"""
+            """
+            An Op with only a Python (perform) implementation
+            """
             __props__ = ()
 
             def make_node(self, input):
@@ -405,7 +403,7 @@ class TestComputeTestValue(unittest.TestCase):
         try:
             theano.config.compute_test_value = 'raise'
             init_Mu1 = theano.shared(
-                numpy.zeros((5,), dtype=config.floatX)).dimshuffle('x', 0)
+                np.zeros((5,), dtype=config.floatX)).dimshuffle('x', 0)
 
             theano.function([], outputs=[init_Mu1])
         finally:

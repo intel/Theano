@@ -1,7 +1,7 @@
 .. _libdoc_gpuarray_dnn:
 
 ===========================================
-:mod:`gpuarray.dnn` -- cuDNN
+:mod:`theano.gpuarray.dnn` -- cuDNN
 ===========================================
 
 .. moduleauthor:: LISA
@@ -43,7 +43,7 @@ To get an error if Theano can not use cuDNN, use this Theano flag:
 
 .. note::
 
-   cuDNN v5rc is supported in Theano master version. So it dropped cuDNN v3 support.
+   cuDNN v5.1 is supported in Theano master version. So it dropped cuDNN v3 support.
    Theano 0.8.0 and 0.8.1 support only cuDNN v3 and v4.
    Theano 0.8.2 will support only v4 and v5.
 
@@ -132,30 +132,114 @@ To get an error if Theano can not use cuDNN, use this Theano flag:
     cudnn.h must be readable by everybody.
 
 
-Functions
-=========
+- Convolution:
+    - :func:`theano.gpuarray.dnn.dnn_conv`, :func:`theano.gpuarray.dnn.dnn_conv3d`.
+    - :func:`theano.gpuarray.dnn.dnn_gradweight`, :func:`theano.gpuarray.dnn.dnn_gradweight3d`.
+    - :func:`theano.gpuarray.dnn.dnn_gradinput`, :func:`theano.gpuarray.dnn.dnn_gradinput3d`.
+- Pooling:
+    - :func:`theano.gpuarray.dnn.dnn_pool`.
+- Batch Normalization:
+    - :func:`theano.gpuarray.dnn.dnn_batch_normalization_train`
+    - :func:`theano.gpuarray.dnn.dnn_batch_normalization_test`.
+- RNN:
+    - :class:`theano.gpuarray.dnn.RNNBlock`
+- Softmax:
+    - You can manually use the op :class:`GpuDnnSoftmax
+      <theano.gpuarray.dnn.GpuDnnSoftmax>` to use its extra feature.
+- Spatial Transformer:
+    - :func:`theano.gpuarray.dnn.dnn_spatialtf`.
+
+
+cuDNN RNN Example
+=================
+
+This is a code example of using the cuDNN RNN functionality.  We
+present the code with some commentary in between to explain some
+peculiarities.
+
+The terminology here assumes that you are familiar with RNN structure.
+
+.. code-block:: python
+
+    dtype = 'float32'
+    input_dim = 32
+    hidden_dim = 16
+    batch_size = 2
+    depth = 3
+    timesteps = 5
+
+To clarify the rest of the code we define some variables to hold sizes.
+
+.. code-block:: python
+
+    X = T.tensor3('X')
+    Y = T.tensor3('Y')
+    h0 = T.tensor3('h0')
+
+We also define some Theano variables to work with.  Here `X` is input,
+`Y` is output (as in expected output) and `h0` is the initial state
+for the recurrent inputs.
+
+.. code-block:: python
+
+    rnnb = dnn.RNNBlock(dtype, hidden_dim, depth, 'gru')
+
+This defines an RNNBlock.  This is a departure from usual Theano
+operations in that it has the structure of a layer more than a
+separate operation.  This is constrained by the underlying API.
+
+.. code-block:: python
+
+    psize = rnnb.get_param_size([batch_size, input_dim])
+    params_cudnn = gpuarray_shared_constructor(
+        np.zeros((psize,), dtype=theano.config.floatX))
+
+Here we allocate space for the trainable parameters of the RNN.  The
+first function tells us how many elements we will need to store the
+parameters.  This space if for all the parameters of all the layers
+inside the RNN and the layout is opaque.
+
+.. code-block:: python
+
+   layer = 0
+    = rnnb.split_params(params_cudnn, layer,
+                                  [batch_size, input_dim])
+
+If you need to access the parameters individually, you can call
+split_params on your shared variable to get all the parameters for a
+single layer. The order and number of returned items depends on the
+type of RNN.
+
+rnn_relu, rnn_tanh
+  input, recurrent
+
+gru
+  input reset, input update, input newmem, recurrent reset, recurrent
+  update, recurrent newmem
+
+lstm
+  input input gate, input forget gate, input newmem gate, input output
+  gate, recurrent input gate, recurrent update gate, recurrent newmem
+  gate, recurrent output gate
+
+All of these elements are composed of a weights and bias (matrix and
+vector).
+
+.. code-block:: python
+
+    y, hy = rnnb.apply(params_cudnn, X, h0)
+
+This is more akin to an op in Theano in that it will apply the RNN
+operation to a set of symbolic inputs and return symbolic outputs.
+`y` is the output, `hy` is the final state for the recurrent inputs.
+
+After this, the gradient works as usual so you can treat the returned
+symbolic outputs as normal Theano symbolic variables.
+
+
+List of Implemented Operations
+==============================
 
 .. automodule:: theano.gpuarray.dnn
-   :noindex:
-   :members: dnn_conv, dnn_pool
+   :members:
 
-Convolution Ops
-===============
-
-.. automodule:: theano.gpuarray.dnn
-   :noindex:
-   :members: GpuDnnConvDesc, GpuDnnConv, GpuDnnConvGradW, GpuDnnConvGradI
-
-Pooling Ops
-===========
-
-.. automodule:: theano.gpuarray.dnn
-   :noindex:
-   :members: GpuDnnPoolDesc, GpuDnnPool, GpuDnnPoolGrad
-
-Softmax Ops
-===========
-
-.. automodule:: theano.gpuarray.dnn
-   :noindex:
-   :members: GpuDnnSoftmax, GpuDnnSoftmaxGrad

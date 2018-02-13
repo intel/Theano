@@ -2,7 +2,7 @@ from __future__ import absolute_import, print_function, division
 import logging
 import warnings
 
-import numpy
+import numpy as np
 
 import theano
 from theano import config
@@ -50,7 +50,7 @@ class TensorType(Type):
         self.broadcastable = tuple(bool(b) for b in broadcastable)
         self.dtype_specs()  # error checking is done there
         self.name = name
-        self.numpy_dtype = numpy.dtype(self.dtype)
+        self.numpy_dtype = np.dtype(self.dtype)
         self.sparse_grad = sparse_grad
         if sparse_grad:
             warnings.warn(
@@ -88,22 +88,22 @@ class TensorType(Type):
                 'maybe you are trying to call a function on a (possibly '
                 'shared) variable instead of a numeric array?')
 
-        if ((type(data) is numpy.ndarray) and
+        if ((type(data) is np.ndarray) and
                 (data.dtype == self.numpy_dtype)):
             if data.dtype.num != self.numpy_dtype.num:
                 data = theano._asarray(data, dtype=self.dtype)
             # -- now fall through to ndim check
-        elif ((type(data) is numpy.memmap) and
+        elif ((type(data) is np.memmap) and
               (data.dtype == self.numpy_dtype)):
             # numpy.memmap is a "safe" subclass of ndarray,
-            # so we can use it whereever we expect a base ndarray.
+            # so we can use it wherever we expect a base ndarray.
             # however, casting it would defeat the purpose of not
             # loading the whole data into memory
             pass
         elif strict:
             # If any of the two conditions above was not met,
             # we raise a meaningful TypeError.
-            if not (type(data) is numpy.ndarray):
+            if not (type(data) is np.ndarray):
                 raise TypeError("%s expected a ndarray object." % self,
                                 data, type(data))
             if data.dtype != self.numpy_dtype:
@@ -118,7 +118,7 @@ class TensorType(Type):
                 # TODO: consider to pad shape with ones to make it consistent
                 # with self.broadcastable... like vector->row type thing
             else:
-                if isinstance(data, numpy.ndarray):
+                if isinstance(data, np.ndarray):
                     # Check if self.dtype can accurately represent data
                     # (do not try to convert the data)
                     up_dtype = scal.upcast(self.dtype, data.dtype)
@@ -135,9 +135,9 @@ class TensorType(Type):
                             'this loss, you can: '
                             '1) explicitly cast your data to %s, or '
                             '2) set "allow_input_downcast=True" when calling '
-                            '"function".'
-                            % (self, data.dtype, self.dtype))
-                        raise TypeError(err_msg, data)
+                            '"function". Value: "%s"'
+                            % (self, data.dtype, self.dtype, repr(data)))
+                        raise TypeError(err_msg)
                 elif (allow_downcast is None and
                         type(data) is float and
                         self.dtype == theano.config.floatX):
@@ -150,7 +150,7 @@ class TensorType(Type):
                     converted_data = theano._asarray(data, self.dtype)
                     # We use the `values_eq` static function from TensorType
                     # to handle NaN values.
-                    if TensorType.values_eq(numpy.asarray(data),
+                    if TensorType.values_eq(np.asarray(data),
                                             converted_data,
                                             force_same_dtype=False):
                         data = converted_data
@@ -195,7 +195,7 @@ class TensorType(Type):
                                 " dimension.", data.shape, self.broadcastable)
             i += 1
         if (self.filter_checks_isfinite and
-                not numpy.all(numpy.isfinite(data))):
+                not np.all(np.isfinite(data))):
             raise ValueError("non-finite elements not allowed")
         return data
 
@@ -203,9 +203,9 @@ class TensorType(Type):
         """
         Convert a symbolic Variable into a TensorType, if compatible.
 
-        For the moment, only a TensorType or CudaNdarrayType will be
-        converted, provided they have the same number of dimensions,
-        broadcastable pattern, and dtype.
+        For the moment, only a TensorType and GpuArrayType will be
+        converted, provided they have the same number of dimensions
+        and dtype and have "compatible" broadcastable pattern.
 
         """
         if hasattr(other, '_as_TensorVariable'):
@@ -255,6 +255,7 @@ class TensorType(Type):
                 'float16': (float, 'npy_float16', 'NPY_FLOAT16'),
                 'float32': (float, 'npy_float32', 'NPY_FLOAT32'),
                 'float64': (float, 'npy_float64', 'NPY_FLOAT64'),
+                'bool': (bool, 'npy_bool', 'NPY_BOOL'),
                 'uint8': (int, 'npy_uint8', 'NPY_UINT8'),
                 'int8': (int, 'npy_int8', 'NPY_INT8'),
                 'uint16': (int, 'npy_uint16', 'NPY_UINT16'),
@@ -292,8 +293,8 @@ class TensorType(Type):
     @staticmethod
     def may_share_memory(a, b):
         # This is a method of TensorType, so both a and b should be ndarrays
-        if isinstance(a, numpy.ndarray) and isinstance(b, numpy.ndarray):
-            return numpy.may_share_memory(a, b)
+        if isinstance(a, np.ndarray) and isinstance(b, np.ndarray):
+            return np.may_share_memory(a, b)
         else:
             return False
 
@@ -306,103 +307,22 @@ class TensorType(Type):
         if force_same_dtype and a.dtype != b.dtype:
             return False
         a_eq_b = (a == b)
-        r = numpy.all(a_eq_b)
+        r = np.all(a_eq_b)
         if r:
             return True
         # maybe the trouble is that there are NaNs
-        a_missing = numpy.isnan(a)
+        a_missing = np.isnan(a)
         if a_missing.any():
-            b_missing = numpy.isnan(b)
-            return numpy.all(a_eq_b + (a_missing == b_missing))
+            b_missing = np.isnan(b)
+            return np.all(a_eq_b + (a_missing == b_missing))
         else:
             return False
 
     @staticmethod
     def values_eq_approx(a, b, allow_remove_inf=False, allow_remove_nan=False,
                          rtol=None, atol=None):
-        """
-        Parameters
-        ----------
-        allow_remove_inf
-            If True, when there is an inf in a, we allow any value in b in
-            that position. Event -inf
-        allow_remove_nan
-            If True, when there is a nan in a, we allow any value in b in
-            that position. Event +-inf
-        rtol
-            Relative tolerance, passed to _allclose.
-        atol
-            Absolute tolerance, passed to _allclose.
-
-        """
-        if isinstance(a, numpy.ndarray) and isinstance(b, numpy.ndarray):
-            if a.shape != b.shape:
-                return False
-            if a.dtype != b.dtype:
-                return False
-            if 'int' in str(a.dtype):
-                return numpy.all(a == b)
-            else:
-                # work around a numpy.allclose bug:
-                # http://projects.scipy.org/numpy/ticket/1672
-                if a.ndim == 0 and numpy.isinf(a):
-                    a = a.reshape(1)
-                    b = b.reshape(1)
-
-                cmp = theano.tensor.basic._allclose(a, b, rtol=rtol, atol=atol)
-                if cmp:
-                    # Numpy claims they are close, this is good enough for us.
-                    return True
-                # Numpy is unhappy, but it does not necessarily mean that a and
-                # b are different. Indeed, Numpy does not like missing values
-                # and will return False whenever some are found in a or b.
-                # The proper way would be to use the MaskArray stuff available
-                # in Numpy. However, it looks like it has been added to Numpy's
-                # core recently, so it may not be available to everyone. Thus,
-                # for now we use a home-made recipe, that should probably be
-                # revisited in the future.
-                a_missing = numpy.isnan(a)
-                a_inf = numpy.isinf(a)
-
-                if not (a_missing.any() or (allow_remove_inf and a_inf.any())):
-                    # There are no missing values in a, thus this is not the
-                    # reason why numpy.allclose(a, b) returned False.
-                    _logger.info(
-                        'numpy allclose failed for abs_err %f and rel_err %f',
-                        numpy.max(abs(a - b)),
-                        numpy.max(abs(a - b) / (abs(a) + abs(b))))
-                    return False
-                # The following line is what numpy.allclose bases its decision
-                # upon, according to its documentation.
-                rtol = 1.0000000000000001e-05
-                atol = 1e-8
-                cmp_elemwise = (numpy.absolute(a - b) <=
-                                (atol + rtol * numpy.absolute(b)))
-                # Find places where both a and b have missing values.
-                both_missing = a_missing * numpy.isnan(b)
-
-                # Find places where both a and b have inf of the same sign.
-                both_inf = a_inf * numpy.isinf(b)
-
-                # cmp_elemwise is weird when we have inf and -inf.
-                # set it to False
-                cmp_elemwise = numpy.where(
-                    both_inf & cmp_elemwise,
-                    a == b,
-                    cmp_elemwise)
-
-                # check the sign of the inf
-                both_inf = numpy.where(both_inf, (a == b), both_inf)
-
-                if allow_remove_inf:
-                    both_inf += a_inf
-                if allow_remove_nan:
-                    both_missing += a_missing
-
-                # Combine all information.
-                return (cmp_elemwise + both_missing + both_inf).all()
-
-        return False
+        return values_eq_approx(a, b, allow_remove_inf, allow_remove_nan,
+                                rtol, atol)
 
     def __hash__(self):
         """Hash equal for same kinds of TensorType"""
@@ -452,7 +372,9 @@ class TensorType(Type):
 
     def __repr__(self):
         return str(self)
-        # "TensorType{%s, %s}" % (str(self.dtype), str(self.broadcastable))
+
+    def c_element_type(self):
+        return self.dtype_specs()[1]
 
     def c_declare(self, name, sub, check_input=True):
         """
@@ -511,18 +433,18 @@ class TensorType(Type):
                              (long int) %(type_num)s,
                              (long int) PyArray_TYPE((PyArrayObject*) py_%(name)s),
                              (long int) PyArray_NDIM(tmp),
-                             (long int) PyArray_NDIM(tmp) >= 3 ?
-            PyArray_DIMS(tmp)[PyArray_NDIM(tmp)-3] : -1,
-                             (long int) PyArray_NDIM(tmp) >= 2 ?
-            PyArray_DIMS(tmp)[PyArray_NDIM(tmp)-2] : -1,
-                             (long int) PyArray_NDIM(tmp) >= 1 ?
-            PyArray_DIMS(tmp)[PyArray_NDIM(tmp)-1] : -1,
-                             (long int) PyArray_NDIM(tmp) >= 3 ?
-            PyArray_STRIDES(tmp)[PyArray_NDIM(tmp)-3] : -1,
-                             (long int) PyArray_NDIM(tmp) >= 2 ?
-            PyArray_STRIDES(tmp)[PyArray_NDIM(tmp)-2] : -1,
-                             (long int) PyArray_NDIM(tmp) >= 1 ?
-            PyArray_STRIDES(tmp)[PyArray_NDIM(tmp)-1] : -1
+                             (long int) (PyArray_NDIM(tmp) >= 3 ?
+            PyArray_DIMS(tmp)[PyArray_NDIM(tmp)-3] : -1),
+                             (long int) (PyArray_NDIM(tmp) >= 2 ?
+            PyArray_DIMS(tmp)[PyArray_NDIM(tmp)-2] : -1),
+                             (long int) (PyArray_NDIM(tmp) >= 1 ?
+            PyArray_DIMS(tmp)[PyArray_NDIM(tmp)-1] : -1),
+                             (long int) (PyArray_NDIM(tmp) >= 3 ?
+            PyArray_STRIDES(tmp)[PyArray_NDIM(tmp)-3] : -1),
+                             (long int) (PyArray_NDIM(tmp) >= 2 ?
+            PyArray_STRIDES(tmp)[PyArray_NDIM(tmp)-2] : -1),
+                             (long int) (PyArray_NDIM(tmp) >= 1 ?
+            PyArray_STRIDES(tmp)[PyArray_NDIM(tmp)-1] : -1)
             );
                 %(fail)s
             }
@@ -580,18 +502,18 @@ class TensorType(Type):
                          " and 3 last strides %%ld %%ld, %%ld.",
                          (long int) PyArray_TYPE((PyArrayObject*) py_%(name)s),
                          (long int) PyArray_NDIM(%(name)s),
-                         (long int) PyArray_NDIM(%(name)s) >= 3 ?
-        PyArray_DIMS(%(name)s)[PyArray_NDIM(%(name)s)-3] : -1,
-                         (long int) PyArray_NDIM(%(name)s) >= 2 ?
-        PyArray_DIMS(%(name)s)[PyArray_NDIM(%(name)s)-2] : -1,
-                         (long int) PyArray_NDIM(%(name)s) >= 1 ?
-        PyArray_DIMS(%(name)s)[PyArray_NDIM(%(name)s)-1] : -1,
-                         (long int) PyArray_NDIM(%(name)s) >= 3 ?
-        PyArray_STRIDES(%(name)s)[PyArray_NDIM(%(name)s)-3] : -1,
-                         (long int) PyArray_NDIM(%(name)s) >= 2 ?
-        PyArray_STRIDES(%(name)s)[PyArray_NDIM(%(name)s)-2] : -1,
-                         (long int) PyArray_NDIM(%(name)s) >= 1 ?
-        PyArray_STRIDES(%(name)s)[PyArray_NDIM(%(name)s)-1] : -1
+                         (long int) (PyArray_NDIM(%(name)s) >= 3 ?
+        PyArray_DIMS(%(name)s)[PyArray_NDIM(%(name)s)-3] : -1),
+                         (long int) (PyArray_NDIM(%(name)s) >= 2 ?
+        PyArray_DIMS(%(name)s)[PyArray_NDIM(%(name)s)-2] : -1),
+                         (long int) (PyArray_NDIM(%(name)s) >= 1 ?
+        PyArray_DIMS(%(name)s)[PyArray_NDIM(%(name)s)-1] : -1),
+                         (long int) (PyArray_NDIM(%(name)s) >= 3 ?
+        PyArray_STRIDES(%(name)s)[PyArray_NDIM(%(name)s)-3] : -1),
+                         (long int) (PyArray_NDIM(%(name)s) >= 2 ?
+        PyArray_STRIDES(%(name)s)[PyArray_NDIM(%(name)s)-2] : -1),
+                         (long int) (PyArray_NDIM(%(name)s) >= 1 ?
+        PyArray_STRIDES(%(name)s)[PyArray_NDIM(%(name)s)-1] : -1)
         );
             %(fail)s
         }
@@ -632,7 +554,7 @@ class TensorType(Type):
         Create an numpy ndarray full of 0 values.
 
         """
-        return numpy.zeros(shape, dtype=self.dtype)
+        return np.zeros(shape, dtype=self.dtype)
 
     def get_shape_info(self, obj):
         """
@@ -680,22 +602,103 @@ class TensorType(Type):
 
         """
         if shape_info:
-            return numpy.prod(shape_info) * numpy.dtype(self.dtype).itemsize
+            return np.prod(shape_info) * np.dtype(self.dtype).itemsize
         else:  # a scalar
-            return numpy.dtype(self.dtype).itemsize
+            return np.dtype(self.dtype).itemsize
 theano.compile.ops.expandable_types += (TensorType,)
 
 
+def values_eq_approx(a, b, allow_remove_inf=False, allow_remove_nan=False,
+                     rtol=None, atol=None):
+    """
+    Parameters
+    ----------
+    allow_remove_inf
+        If True, when there is an inf in a, we allow any value in b in
+        that position. Event -inf
+    allow_remove_nan
+        If True, when there is a nan in a, we allow any value in b in
+        that position. Event +-inf
+    rtol
+        Relative tolerance, passed to _allclose.
+    atol
+        Absolute tolerance, passed to _allclose.
+
+    """
+    if isinstance(a, np.ndarray) and isinstance(b, np.ndarray):
+        if a.shape != b.shape:
+            return False
+        if a.dtype != b.dtype:
+            return False
+        if str(a.dtype) not in theano.tensor.continuous_dtypes:
+            return np.all(a == b)
+        else:
+            cmp = theano.tensor.basic._allclose(a, b, rtol=rtol, atol=atol)
+            if cmp:
+                # Numpy claims they are close, this is good enough for us.
+                return True
+            # Numpy is unhappy, but it does not necessarily mean that a and
+            # b are different. Indeed, Numpy does not like missing values
+            # and will return False whenever some are found in a or b.
+            # The proper way would be to use the MaskArray stuff available
+            # in Numpy. However, it looks like it has been added to Numpy's
+            # core recently, so it may not be available to everyone. Thus,
+            # for now we use a home-made recipe, that should probably be
+            # revisited in the future.
+            a_missing = np.isnan(a)
+            a_inf = np.isinf(a)
+
+            if not (a_missing.any() or (allow_remove_inf and a_inf.any())):
+                # There are no missing values in a, thus this is not the
+                # reason why numpy.allclose(a, b) returned False.
+                _logger.info(
+                    'numpy allclose failed for abs_err %f and rel_err %f',
+                    np.max(abs(a - b)),
+                    np.max(abs(a - b) / (abs(a) + abs(b))))
+                return False
+            # The following line is what numpy.allclose bases its decision
+            # upon, according to its documentation.
+            rtol = 1.0000000000000001e-05
+            atol = 1e-8
+            cmp_elemwise = (np.absolute(a - b) <=
+                            (atol + rtol * np.absolute(b)))
+            # Find places where both a and b have missing values.
+            both_missing = a_missing * np.isnan(b)
+
+            # Find places where both a and b have inf of the same sign.
+            both_inf = a_inf * np.isinf(b)
+
+            # cmp_elemwise is weird when we have inf and -inf.
+            # set it to False
+            cmp_elemwise = np.where(
+                both_inf & cmp_elemwise,
+                a == b,
+                cmp_elemwise)
+
+            # check the sign of the inf
+            both_inf = np.where(both_inf, (a == b), both_inf)
+
+            if allow_remove_inf:
+                both_inf += a_inf
+            if allow_remove_nan:
+                both_missing += a_missing
+
+            # Combine all information.
+            return (cmp_elemwise + both_missing + both_inf).all()
+
+    return False
+
+
 def values_eq_approx_remove_inf(a, b):
-    return TensorType.values_eq_approx(a, b, True)
+    return values_eq_approx(a, b, True)
 
 
 def values_eq_approx_remove_nan(a, b):
-    return TensorType.values_eq_approx(a, b, False, True)
+    return values_eq_approx(a, b, False, True)
 
 
 def values_eq_approx_remove_inf_nan(a, b):
-    return TensorType.values_eq_approx(a, b, True, True)
+    return values_eq_approx(a, b, True, True)
 
 
 def values_eq_approx_always_true(a, b):
@@ -801,8 +804,8 @@ theano.compile.register_specify_shape_c_code(
             PyErr_Format(PyExc_AssertionError,
                          "SpecifyShape: vector of shape has %%d elements,"
                          " but the input has %%d dimensions.",
-                         PyArray_NDIM(%(iname)s),
-                         PyArray_DIMS(%(shape)s)[0]);
+                         PyArray_DIMS(%(shape)s)[0],
+                         PyArray_NDIM(%(iname)s));
             %(fail)s;
         }
         for(int i = 0; i < PyArray_NDIM(%(iname)s); i++){

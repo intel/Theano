@@ -276,18 +276,43 @@ def psi_inplace(a):
 
 
 @_scal_inplace
+def tri_gamma_inplace(a):
+    """second derivative of the log gamma function"""
+
+
+@_scal_inplace
 def chi2sf_inplace(x, k):
     """chi squared survival function"""
 
 
 @_scal_inplace
-def j0_inplace(a):
-    """Bessel function of the 0'th kind"""
+def j0_inplace(x):
+    """Bessel function of the first kind of order 0."""
 
 
 @_scal_inplace
-def j1_inplace(a):
-    """Bessel function of the 0'th kind"""
+def j1_inplace(x):
+    """Bessel function of the first kind of order 1."""
+
+
+@_scal_inplace
+def jv_inplace(v, x):
+    """Bessel function of the first kind of order v (real)."""
+
+
+@_scal_inplace
+def i0_inplace(x):
+    """Modified Bessel function of the first kind of order 0."""
+
+
+@_scal_inplace
+def i1_inplace(x):
+    """Modified Bessel function of the first kind of order 1."""
+
+
+@_scal_inplace
+def iv_inplace(v, x):
+    """Modified Bessel function of the first kind of order v (real)."""
 
 
 @_scal_inplace

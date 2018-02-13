@@ -2,7 +2,7 @@ from __future__ import absolute_import, print_function, division
 import unittest
 
 from nose.plugins.skip import SkipTest
-import numpy
+import numpy as np
 
 import theano
 import theano.gof.op as op
@@ -71,7 +71,6 @@ MyOp = MyOp()
 
 
 class NoInputOp(Op):
-
     """An Op to test the corner-case of an Op with no input."""
     __props__ = ()
 
@@ -181,7 +180,7 @@ class TestMakeThunk(unittest.TestCase):
                           o.owner.op.c_code,
                           o.owner, 'o', ['x'], 'z', {'fail': ''})
 
-        storage_map = {i: [numpy.int32(3)],
+        storage_map = {i: [np.int32(3)],
                        o: [None]}
         compute_map = {i: [True],
                        o: [False]}
@@ -218,7 +217,7 @@ class TestMakeThunk(unittest.TestCase):
                           o.owner.op.perform,
                           o.owner, 0, [None])
 
-        storage_map = {i: [numpy.int32(3)],
+        storage_map = {i: [np.int32(3)],
                        o: [None]}
         compute_map = {i: [True],
                        o: [False]}
@@ -238,7 +237,6 @@ class TestMakeThunk(unittest.TestCase):
     def test_no_make_node(self):
         class DoubleOp(Op):
             """An Op without make_node"""
-
             __props__ = ()
 
             itypes = [T.dmatrix]
@@ -251,9 +249,9 @@ class TestMakeThunk(unittest.TestCase):
 
         x_input = T.dmatrix('x_input')
         f = theano.function([x_input], DoubleOp()(x_input))
-        inp = numpy.random.rand(5, 4)
+        inp = np.random.rand(5, 4)
         out = f(inp)
-        assert numpy.allclose(inp * 2, out)
+        assert np.allclose(inp * 2, out)
 
 
 def test_test_value_python_objects():
@@ -262,33 +260,33 @@ def test_test_value_python_objects():
 
 
 def test_test_value_ndarray():
-    x = numpy.zeros((5, 5))
+    x = np.zeros((5, 5))
     v = op.get_test_value(x)
     assert (v == x).all()
 
 
 def test_test_value_constant():
-    x = T.as_tensor_variable(numpy.zeros((5, 5)))
+    x = T.as_tensor_variable(np.zeros((5, 5)))
     v = op.get_test_value(x)
 
-    assert numpy.all(v == numpy.zeros((5, 5)))
+    assert np.all(v == np.zeros((5, 5)))
 
 
 def test_test_value_shared():
-    x = shared(numpy.zeros((5, 5)))
+    x = shared(np.zeros((5, 5)))
     v = op.get_test_value(x)
 
-    assert numpy.all(v == numpy.zeros((5, 5)))
+    assert np.all(v == np.zeros((5, 5)))
 
 
 def test_test_value_op():
     try:
         prev_value = config.compute_test_value
         config.compute_test_value = 'raise'
-        x = T.log(numpy.ones((5, 5)))
+        x = T.log(np.ones((5, 5)))
         v = op.get_test_value(x)
 
-        assert numpy.allclose(v, numpy.zeros((5, 5)))
+        assert np.allclose(v, np.zeros((5, 5)))
     finally:
         config.compute_test_value = prev_value
 
@@ -310,8 +308,8 @@ def test_get_debug_values_no_debugger():
 
 
 def test_get_det_debug_values_ignore():
-    """get_debug_values should return [] when debugger is ignore
-        and some values are missing """
+    # get_debug_values should return [] when debugger is ignore
+    # and some values are missing
 
     prev_value = config.compute_test_value
     try:
@@ -327,8 +325,8 @@ def test_get_det_debug_values_ignore():
 
 
 def test_get_debug_values_success():
-    """tests that get_debug_value returns values when available
-    (and the debugger is on)"""
+    # tests that get_debug_value returns values when available
+    # (and the debugger is on)
 
     prev_value = config.compute_test_value
     for mode in ['ignore', 'warn', 'raise']:
@@ -337,8 +335,8 @@ def test_get_debug_values_success():
             config.compute_test_value = mode
 
             x = T.vector()
-            x.tag.test_value = numpy.zeros((4,), dtype=config.floatX)
-            y = numpy.zeros((5, 5))
+            x.tag.test_value = np.zeros((4,), dtype=config.floatX)
+            y = np.zeros((5, 5))
 
             iters = 0
 
@@ -356,8 +354,8 @@ def test_get_debug_values_success():
 
 
 def test_get_debug_values_exc():
-    """tests that get_debug_value raises an exception when
-        debugger is set to raise and a value is missing """
+    # tests that get_debug_value raises an exception when
+    # debugger is set to raise and a value is missing
 
     prev_value = config.compute_test_value
     try:
@@ -384,8 +382,8 @@ def test_get_debug_values_exc():
 
 
 def test_debug_error_message():
-    """tests that debug_error_message raises an
-    exception when it should."""
+    # tests that debug_error_message raises an
+    # exception when it should.
 
     prev_value = config.compute_test_value
 

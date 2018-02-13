@@ -12,13 +12,13 @@ import six.moves.cPickle as pickle
 from itertools import chain
 import time
 import warnings
-import numpy
+import numpy as np
 
 import theano
 from theano import config, gof
 from theano.compat import izip
 from theano.gof import graph
-import theano.compile.mode
+import theano.compile.profiling
 from theano.compile.io import (
     In, SymbolicInput, SymbolicOutput)
 from theano.compile.ops import deep_copy_op, view_op
@@ -87,7 +87,7 @@ def infer_reuse_pattern(fgraph, outputs_to_disown):
     as any of the specified variables. Used internally by function,
     FunctionMaker.
 
-    This list (or set) is also refered to as no_recycling sometimes,
+    This list (or set) is also referred to as no_recycling sometimes,
     especially by linker code.
 
     """
@@ -132,6 +132,11 @@ class Supervisor:
         self.protected = list(protected)
 
     def validate(self, fgraph):
+        if config.cycle_detection == 'fast' and hasattr(fgraph, 'has_destroyers'):
+            if fgraph.has_destroyers(self.protected):
+                raise gof.InconsistencyError("Trying to destroy a protected"
+                                             "Variable.")
+            return True
         if not hasattr(fgraph, 'destroyers'):
             return True
         for r in self.protected + list(fgraph.outputs):
@@ -190,7 +195,7 @@ def std_fgraph(input_specs, output_specs, accept_inplace=False):
                    for spec, input in zip(input_specs, fgraph.inputs)
                    if not (spec.mutable or
                            (hasattr(fgraph, 'destroyers') and
-                            fgraph.destroyers(input)))))
+                            fgraph.has_destroyers([input])))))
 
     # If named nodes are replaced, keep the name
     for feature in std_fgraph.features:
@@ -359,7 +364,8 @@ class Function(object):
     """
 
     def __init__(self, fn, input_storage, output_storage, indices, outputs,
-                 defaults, unpack_single, return_none, output_keys, maker):
+                 defaults, unpack_single, return_none, output_keys, maker,
+                 name=None):
         self.fn = fn
         self.input_storage = input_storage
         self.output_storage = output_storage
@@ -371,9 +377,22 @@ class Function(object):
         self.maker = maker
         self.profile = None  # reassigned in FunctionMaker.create
         self.trust_input = False  # If True, we don't check the input parameter
-        self.name = None
+        self.name = name
         self.nodes_with_inner_function = []
         self.output_keys = output_keys
+
+        # See if we have any mutable / borrow inputs
+        # TODO: this only need to be set if there is more then 1 input
+        self._check_for_aliased_inputs = False
+        for i in maker.inputs:
+            # If the input is a shared variable, the memory region is
+            # under Theano control and so we don't need to check if it
+            # is aliased as we never do that.
+            if (isinstance(i, In) and not i.shared and
+                (getattr(i, 'borrow', False) or
+                 getattr(i, 'mutable', False))):
+                self._check_for_aliased_inputs = True
+                break
 
         # We will be popping stuff off this `containers` object.  It is a copy.
         containers = list(self.input_storage)
@@ -611,7 +630,7 @@ class Function(object):
             # Swap SharedVariable in fgraph and In instances
             for index, (i, in_v) in enumerate(zip(ins, fg_cpy.inputs)):
                 # Variables in maker.inputs are defined by user, therefore we
-                # use them to make comparision and do the mapping.
+                # use them to make comparison and do the mapping.
                 # Otherwise we don't touch them.
                 var = maker.inputs[index].variable
 
@@ -663,13 +682,13 @@ class Function(object):
         input_storage = [i.value for i in ins]
         # reinitialize new maker and create new function
         if profile is None:
-            profile = config.profile
+            profile = config.profile or config.print_global_stats
             # profile -> True or False
         if profile is True:
             if name:
                 message = name
             else:
-                message = str(maker.profile.message) + " copy"
+                message = str(profile.message) + " copy"
             profile = theano.compile.profiling.ProfileStats(message=message)
             # profile -> object
         elif type(profile) == str:
@@ -749,6 +768,12 @@ class Function(object):
             List of outputs on indices/keys from ``output_subset`` or all of them,
             if ``output_subset`` is not passed.
         """
+        def restore_defaults():
+            for i, (required, refeed, value) in enumerate(self.defaults):
+                if refeed:
+                    if isinstance(value, gof.Container):
+                        value = value.storage[0]
+                    self[i] = value
         profile = self.profile
         t0 = time.time()
 
@@ -794,9 +819,17 @@ class Function(object):
                             function_name += ' with name "' + self.name + '"'
                         if hasattr(arg, 'name') and arg.name:
                             argument_name += ' with name "' + arg.name + '"'
-                        e.args = ("Bad input " + argument_name + " to " +
-                                  function_name + " at index %d (0-based)"
-                                  % i,) + e.args
+                        where = theano.gof.utils.get_variable_trace_string(
+                            self.maker.inputs[i].variable)
+                        if len(e.args) == 1:
+                            e.args = ("Bad input " + argument_name + " to " +
+                                      function_name + " at index %d (0-based). %s"
+                                      % (i, where) + e.args[0],)
+                        else:
+                            e.args = ("Bad input " + argument_name + " to " +
+                                      function_name + " at index %d (0-based). %s"
+                                      % (i, where),) + e.args
+                        restore_defaults()
                         raise
                 s.provided += 1
                 i += 1
@@ -807,6 +840,7 @@ class Function(object):
                 self[k] = arg
 
         if (not self.trust_input and
+            # The getattr is only needed for old pickle
                 getattr(self, '_check_for_aliased_inputs', True)):
             # Collect aliased inputs among the storage space
             args_share_memory = []
@@ -822,9 +856,9 @@ class Function(object):
                              in args_share_memory[j]],
                             [self.input_storage[k].storage[0] for k
                              in args_share_memory[j]])
-                        if numpy.any([(var.type is i_var.type and
-                                       var.type.may_share_memory(val, i_val))
-                                      for (var, val) in group_j]):
+                        if any([(var.type is i_var.type and
+                                 var.type.may_share_memory(val, i_val))
+                                for (var, val) in group_j]):
 
                             is_aliased = True
                             args_share_memory[j].append(i)
@@ -833,27 +867,30 @@ class Function(object):
                     if not is_aliased:
                         args_share_memory.append([i])
 
-                # Check for groups of more than one argument that share memory
-                for group in args_share_memory:
-                    if len(group) > 1:
-                        # copy all but the first
-                        for idx in group[1:]:
-                            self.input_storage[i].storage[0] = copy.copy(
-                                self.input_storage[i].storage[0])
+            # Check for groups of more than one argument that share memory
+            for group in args_share_memory:
+                if len(group) > 1:
+                    # copy all but the first
+                    for j in group[1:]:
+                        self.input_storage[j].storage[0] = copy.copy(
+                            self.input_storage[j].storage[0])
 
         # Check if inputs are missing, or if inputs were set more than once, or
         # if we tried to provide inputs that are supposed to be implicit.
         if not self.trust_input:
             for c in self.input_storage:
                 if c.required and not c.provided:
+                    restore_defaults()
                     raise TypeError("Missing required input: %s" %
                                     getattr(self.inv_finder[c], 'variable',
                                             self.inv_finder[c]))
                 if c.provided > 1:
+                    restore_defaults()
                     raise TypeError("Multiple values for input: %s" %
                                     getattr(self.inv_finder[c], 'variable',
                                             self.inv_finder[c]))
                 if c.implicit and c.provided > 0:
+                    restore_defaults()
                     raise TypeError(
                         'Tried to provide value for implicit input: %s'
                         % getattr(self.inv_finder[c], 'variable',
@@ -866,6 +903,7 @@ class Function(object):
                 self.fn() if output_subset is None else\
                 self.fn(output_subset=output_subset)
         except Exception:
+            restore_defaults()
             if hasattr(self.fn, 'position_of_error'):
                 # this is a new vm-provided function or c linker
                 # they need this because the exception manipulation
@@ -918,11 +956,7 @@ class Function(object):
             outputs = outputs[:self.n_returned_outputs]
 
         # Put default values back in the storage
-        for i, (required, refeed, value) in enumerate(self.defaults):
-            if refeed:
-                if isinstance(value, gof.Container):
-                    value = value.storage[0]
-                self[i] = value
+        restore_defaults()
         #
         # NOTE: This logic needs to be replicated in
         #       scan.
@@ -930,6 +964,7 @@ class Function(object):
         #
 
         dt_call = time.time() - t0
+        theano.compile.profiling.total_fct_exec_time += dt_call
         self.maker.mode.call_time += dt_call
         if profile:
             profile.fct_callcount += 1
@@ -991,6 +1026,15 @@ class Function(object):
         """
         return [i.variable for i in self.maker.inputs if i.implicit]
 
+    def sync_shared(self):
+        if (hasattr(theano, "gpuarray") and
+                theano.gpuarray.pygpu_activated):
+            import pygpu
+            for i in self.maker.fgraph.update_mapping.values():
+                inp = self.input_storage[i]
+                if isinstance(inp.data, pygpu.gpuarray.GpuArray):
+                    inp.data.sync()
+
 
 # pickling/deepcopy support for Function
 def _pickle_Function(f):
@@ -1012,9 +1056,9 @@ def _pickle_Function(f):
         all_data = input_storage + inputs_data
         for i, d_i in enumerate(all_data):
             for j, d_j in enumerate(all_data):
-                if ((i < j) and isinstance(d_i, numpy.ndarray) and
-                        isinstance(d_j, numpy.ndarray)):
-                    if numpy.may_share_memory(d_i, d_j):
+                if ((i < j) and isinstance(d_i, np.ndarray) and
+                        isinstance(d_j, np.ndarray)):
+                    if np.may_share_memory(d_i, d_j):
                         if f.pickle_aliased_memory_strategy == 'warn':
                             _logger.warning('aliased relationship between '
                                             'Function arguments %s, %s '
@@ -1023,19 +1067,25 @@ def _pickle_Function(f):
                                             (str(d_i), str(d_j)))
                         else:
                             raise AliasedMemoryError(d_i, d_j)
-    rval = (_constructor_Function, (f.maker, input_storage, inputs_data))
+    # The user can override trust_input. Our doc tell that.  We should
+    # not do that anymore and make sure the Maker have all the
+    # information needed.
+    rval = (_constructor_Function,
+            (f.maker, input_storage, inputs_data, f.trust_input))
     return rval
 
 
-def _constructor_Function(maker, input_storage, inputs_data):
+def _constructor_Function(maker, input_storage, inputs_data, trust_input=False):
     if not theano.config.unpickle_function:
         return None
+
     f = maker.create(input_storage, trustme=True)
     assert len(f.input_storage) == len(inputs_data)
     for container, x in zip(f.input_storage, inputs_data):
         assert (container.data is x) or \
-            (isinstance(x, numpy.ndarray) and (container.data == x).all()) or \
+            (isinstance(x, np.ndarray) and (container.data == x).all()) or \
             (container.data == x)
+    f.trust_input = trust_input
     return f
 
 copyreg.pickle(Function, _pickle_Function)
@@ -1070,7 +1120,7 @@ def insert_deepcopy(fgraph, wrapped_inputs, wrapped_outputs):
 
     # We can't use fgraph.inputs as this don't include Constant Value.
     all_graph_inputs = gof.graph.inputs(fgraph.outputs)
-    has_destroyers = hasattr(fgraph, 'get_destroyers_of')
+    has_destroyers_attr = hasattr(fgraph, 'has_destroyers')
 
     for i in xrange(len(fgraph.outputs)):
         views_of_output_i = set()
@@ -1101,7 +1151,7 @@ def insert_deepcopy(fgraph, wrapped_inputs, wrapped_outputs):
                 #    being updated
                 if input_j in updated_fgraph_inputs:
                     continue
-                if input_j in views_of_output_i and not (has_destroyers and fgraph.get_destroyers_of(input_j)):
+                if input_j in views_of_output_i and not (has_destroyers_attr and fgraph.has_destroyers([input_j])):
                     # We don't put deep_copy_op if the input and the
                     # output have borrow==True
                     if input_j in fgraph.inputs:
@@ -1161,6 +1211,9 @@ class FunctionMaker(object):
         - 'warn': log a warning
         - 'ignore': do not do anything
         - None: Use the value in the Theano flags on_unused_input.
+    name : str
+        An optional name for this function. If used, the profile mode will
+        print the time spent in this function.
 
     """
 
@@ -1375,20 +1428,19 @@ class FunctionMaker(object):
     def __init__(self, inputs, outputs,
                  mode=None, accept_inplace=False, function_builder=Function,
                  profile=None, on_unused_input=None, fgraph=None,
-                 output_keys=None):
+                 output_keys=None, name=None):
+        # Save the provided mode, not the instanciated mode.
+        # The instanciated mode don't pickle and if we unpickle a Theano
+        # function and it get re-compiled, we want the current optimizer to be
+        # used, not the optimizer when it was saved.
+        self.mode = mode
         mode = theano.compile.mode.get_mode(mode)
 
-        # figure out which profile object to use (if any)
-        # to help with forward-porting ProfileMode,
-        # we allow ProfileMode to provide a ProfileStats object
-        # using this somewhat awkward mechanism.
-        mode_profile = getattr(mode, 'profile', None)
-        if (profile is not None and
-                profile is not False and
-                mode_profile is not None):
+        # Assert old way of working isn't used
+        if getattr(mode, 'profile', None):
             raise TypeError(
-                'profile passed via both "mode" and "profile" arguments')
-        self.profile = profile = profile or mode_profile
+                "profile passed via 'mode'. This isn't supported anymore")
+        self.profile = profile
         if profile:
             # This is very important:
             # 1) We preload the cache here to don't have its timming
@@ -1400,7 +1452,6 @@ class FunctionMaker(object):
             theano.gof.cc.get_module_cache().refresh()
         # Handle the case where inputs and/or outputs is a single
         # Variable (not in a list)
-        self.orig_outputs = outputs
         unpack_single = False
         return_none = False
         if outputs is None:
@@ -1456,6 +1507,10 @@ class FunctionMaker(object):
                 theano.config.traceback.limit = theano.config.traceback.compile_limit
                 start_optimizer = time.time()
 
+                # In case there is an error during optimization.
+                optimizer_profile = None
+                opt_time = None
+
                 # now optimize the graph
                 if theano.config.cache_optimizations:
                     optimizer_profile = self.optimize_graph_with_cache(
@@ -1465,15 +1520,6 @@ class FunctionMaker(object):
 
                 end_optimizer = time.time()
                 opt_time = end_optimizer - start_optimizer
-                if profile:
-                    profile.optimizer_time += opt_time
-                    if theano.config.profile_optimizer:
-                        profile.optimizer_profile = (optimizer,
-                                                     optimizer_profile)
-                elif theano.config.profile_optimizer:
-                    warnings.warn((
-                        "config.profile_optimizer requires config.profile to "
-                        " be set to True as well"), stacklevel=3)
                 _logger.debug('Optimizing took %f seconds', opt_time)
 
                 # Add deep copy to respect the memory interface
@@ -1481,6 +1527,25 @@ class FunctionMaker(object):
             finally:
                 theano.config.compute_test_value = compute_test_value_orig
                 theano.config.traceback.limit = limit_orig
+
+                # If the optimizer got interrupted
+                if opt_time is None:
+                    end_optimizer = time.time()
+                    opt_time = end_optimizer - start_optimizer
+                theano.compile.profiling.total_graph_opt_time += opt_time
+                if profile:
+                    if (optimizer_profile is None and
+                            hasattr(optimizer, 'pre_profile')):
+                        optimizer_profile = optimizer.pre_profile
+                    profile.optimizer_time += opt_time
+                    if theano.config.profile_optimizer:
+                        profile.optimizer_profile = (optimizer,
+                                                     optimizer_profile)
+                # IF False, if mean the profile for that function was explicitly disabled
+                elif theano.config.profile_optimizer and profile is not False:
+                    warnings.warn((
+                        "config.profile_optimizer requires config.profile to "
+                        " be set to True as well"), stacklevel=3)
 
         # initialize the linker
         if not hasattr(linker, 'accept'):
@@ -1506,18 +1571,18 @@ class FunctionMaker(object):
             # hacky thing so VMLinker knows about updates
             self.linker.accept_var_updates(
                 fgraph_updated_vars(fgraph, inputs))
-
+        fgraph.name = name
         self.indices = indices
         self.inputs = inputs
         self.expanded_inputs = inputs
         self.outputs = outputs
         self.unpack_single = unpack_single
         self.return_none = return_none
-        self.mode = mode
         self.accept_inplace = accept_inplace
         self.function_builder = function_builder
         self.on_unused_input = on_unused_input  # Used for the pickling/copy
         self.output_keys = output_keys
+        self.name = name
 
         self.required = [(i.value is None) for i in self.inputs]
         self.refeed = [
@@ -1654,6 +1719,7 @@ class FunctionMaker(object):
         end_linker = time.time()
 
         linker_time = end_linker - start_linker
+        theano.compile.profiling.total_time_linker += linker_time
         _logger.debug('Linker took %f seconds', linker_time)
         if self.profile:
             self.profile.linker_time += linker_time
@@ -1663,33 +1729,22 @@ class FunctionMaker(object):
 
         fn = self.function_builder(_fn, _i, _o, self.indices, self.outputs,
                                    defaults, self.unpack_single,
-                                   self.return_none, self.output_keys, self)
+                                   self.return_none, self.output_keys, self,
+                                   name=self.name)
+
         fn.profile = self.profile
         return fn
 
 
-def _pickle_FunctionMaker(self):
-    kwargs = dict(
-        inputs=self.inputs,
-        outputs=self.orig_outputs,
-        fgraph=self.fgraph,
-        mode=self.mode,
-        accept_inplace=self.accept_inplace,
-        function_builder=self.function_builder,
-        profile=self.profile,
-        on_unused_input=self.on_unused_input)
-    return (_constructor_FunctionMaker, (kwargs,))
-
-
 def _constructor_FunctionMaker(kwargs):
+    # Needed for old pickle
+    # Old pickle have at least the problem that output_keys where not saved.
     if theano.config.unpickle_function:
         if theano.config.reoptimize_unpickled_function:
             del kwargs['fgraph']
         return FunctionMaker(**kwargs)
     else:
         return None
-
-copyreg.pickle(FunctionMaker, _pickle_FunctionMaker)
 
 __checkers = []
 
@@ -1745,9 +1800,6 @@ def orig_function(inputs, outputs, mode=None, accept_inplace=False,
 
     - FAST_COMPILE (minimal optimization)
 
-    - ProfileMode(deprecated): allow to print a profile mode with
-      mode.print_summary
-
     - DebugMode: verify many internal conditions that are normally assumed
       (slow)
 
@@ -1774,24 +1826,26 @@ def orig_function(inputs, outputs, mode=None, accept_inplace=False,
 
     if isinstance(mode, (list, tuple)):  # "mode comparison" semantics
         raise Exception("We do not support the passing of multiple modes")
-    else:
+    fn = None
+    try:
         Maker = getattr(mode, 'function_maker', FunctionMaker)
-        fn = Maker(inputs,
-                   outputs,
-                   mode,
-                   accept_inplace=accept_inplace,
-                   profile=profile,
-                   on_unused_input=on_unused_input,
-                   output_keys=output_keys).create(
-            defaults)
+        m = Maker(inputs,
+                  outputs,
+                  mode,
+                  accept_inplace=accept_inplace,
+                  profile=profile,
+                  on_unused_input=on_unused_input,
+                  output_keys=output_keys,
+                  name=name)
+        with theano.change_flags(compute_test_value="off"):
+            fn = m.create(defaults)
+    finally:
+        t2 = time.time()
+        if fn and profile:
+            profile.compile_time += t2 - t1
+            # TODO: append
+            profile.nb_nodes = len(fn.maker.fgraph.apply_nodes)
 
-    t2 = time.time()
-    if profile:
-        profile.compile_time += t2 - t1
-        profile.nb_nodes = len(fn.maker.fgraph.apply_nodes)
-
-    fn.name = name
-    fn.maker.fgraph.name = name
     return fn
 
 

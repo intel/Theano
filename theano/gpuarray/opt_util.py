@@ -1,17 +1,16 @@
 from __future__ import absolute_import, print_function, division
 from functools import wraps
 
-import numpy
+import numpy as np
 
-from theano import scalar as scal, Constant
+from theano import tensor, scalar as scal, Constant
 from theano.gof import local_optimizer
+from theano.gof.opt import inherit_stack_trace
 from theano.tensor import (DimShuffle, get_scalar_constant_value,
                            NotScalarConstantError)
 
-from .basic_ops import GpuFromHost, HostFromGpu, GpuAllocEmpty, gpu_alloc_empty
+from .basic_ops import GpuFromHost, HostFromGpu, GpuAllocEmpty, GpuReshape
 from .elemwise import GpuDimShuffle, GpuElemwise
-
-_one = scal.constant(numpy.asarray(1.0, dtype='float32'))
 
 
 def grab_cpu_scalar(v, nd):
@@ -118,7 +117,7 @@ def alpha_merge(cls, alpha_in, beta_in):
 
         maker(node, *inputs)
 
-    The `node` argument you recieve is the original apply node that
+    The `node` argument you receive is the original apply node that
     contains your op.  You should use it to grab relevant properties
     for your op so that the new version performs the same computation.
     The `*inputs` parameters contains the new inputs for your op.  You
@@ -184,7 +183,8 @@ def alpha_merge(cls, alpha_in, beta_in):
                 except NotScalarConstantError:
                     inputs[alpha_in] = lr * targ.inputs[alpha_in]
                     inputs[beta_in] = lr * targ.inputs[beta_in]
-                return maker(targ, *inputs)
+                with inherit_stack_trace(node.outputs):
+                    return maker(targ, *inputs)
         return opt
     return wrapper
 
@@ -209,7 +209,7 @@ def output_merge(cls, alpha_in, beta_in, out_in):
 
         maker(node, *inputs)
 
-    The `node` argument you recieve is the original apply node that
+    The `node` argument you receive is the original apply node that
     contains your op.  You should use it to grab relevant properties
     for your op so that the new version performs the same computation.
     The `*inputs` parameters contains the new inputs for your op.  You
@@ -271,8 +271,11 @@ def output_merge(cls, alpha_in, beta_in, out_in):
                     return None
                 inputs = list(targ.inputs)
                 inputs[out_in] = W
-                inputs[beta_in] = _one.clone()
-                return maker(targ, *inputs)
+                dtype = inputs[beta_in].dtype
+                one = scal.constant(np.asarray(1.0, dtype=dtype))
+                inputs[beta_in] = one
+                with inherit_stack_trace(node.outputs):
+                    return maker(targ, *inputs)
         return opt
     return wrapper
 
@@ -288,7 +291,7 @@ def inplace_allocempty(op, idx):
 
         maker(node, inputs)
 
-    The `node` argument you recieve is the original apply node that
+    The `node` argument you receive is the original apply node that
     contains your op.  You should use it to grab relevant properties
     for your op so that the new version performs the same computation.
     You should also switch the op to work inplace.  The `*inputs`
@@ -324,8 +327,82 @@ def inplace_allocempty(op, idx):
             if (alloc.owner and
                     isinstance(alloc.owner.op, GpuAllocEmpty) and
                     len(alloc.clients) > 1):
-                alloc_op = gpu_alloc_empty(alloc.owner.op.context_name, dtype=alloc.owner.op.dtype)
+                alloc_op = GpuAllocEmpty(alloc.owner.op.dtype, alloc.owner.op.context_name)
                 inputs[idx] = alloc_op(*alloc.owner.inputs)
-            return maker(node, inputs)
+            with inherit_stack_trace(node.outputs):
+                return maker(node, inputs)
         return opt
     return wrapper
+
+
+def pad_dims(input, leftdims, rightdims):
+    """Reshapes the input to a (leftdims + rightdims) tensor
+
+    This helper function is used to convert pooling inputs with arbitrary
+    non-pooling dimensions to the correct number of dimensions for the
+    GPU pooling ops.
+
+    This reduces or expands the number of dimensions of the input to
+    exactly `leftdims`, by adding extra dimensions on the left or by
+    combining some existing dimensions on the left of the input.
+
+    Use `unpad_dims` to reshape back to the original dimensions.
+
+    Examples
+    --------
+    Given input of shape (3, 5, 7), ``pad_dims(input, 2, 2)``
+    adds a singleton dimension and reshapes to (1, 3, 5, 7).
+    Given that output from pad_dims, ``unpad_dims(output, input, 2, 2)``
+    reshapes back to (3, 5, 7).
+
+    Given input of shape (3, 5, 7, 9), ``pad_dims(input, 2, 2)``
+    does not reshape and returns output with shape (3, 5, 7, 9).
+
+    Given input of shape (3, 5, 7, 9, 11), ``pad_dims(input, 2, 2)``
+    combines the first two dimensions and reshapes to (15, 7, 9, 11).
+
+    Given input of shape (3, 5, 7, 9), ``pad_dims(input, 2, 3)``
+    adds a singleton dimension and reshapes to (1, 3, 5, 7, 9).
+    """
+    assert input.ndim >= rightdims
+
+    if input.ndim == (leftdims + rightdims):
+        return input
+
+    # extract image dimensions
+    img_shape = input.shape[-rightdims:]
+
+    non_pool_ndim = input.ndim - rightdims
+    if non_pool_ndim < leftdims:
+        # too few dimensions, pad on the left
+        dummy_dims = tensor.as_tensor([1] * (leftdims - non_pool_ndim))
+        new_shape = tensor.join(0, dummy_dims,
+                                input.shape[:non_pool_ndim],
+                                img_shape)
+    else:
+        # too many dimensions, combine the leading dimensions
+        batched_ndim = non_pool_ndim - leftdims + 1
+        batch_size = tensor.prod(input.shape[:batched_ndim])
+        # convert to a vector for tensor.join
+        batch_size = tensor.shape_padright(batch_size, 1)
+        new_shape = tensor.join(0, batch_size,
+                                input.shape[batched_ndim:non_pool_ndim],
+                                img_shape)
+
+    # store in the required shape
+    new_shape = tensor.cast(new_shape, 'int64')
+    input_ND = GpuReshape(leftdims + rightdims)(input, new_shape)
+    return input_ND
+
+
+def unpad_dims(output, input, leftdims, rightdims):
+    """Reshapes the output after pad_dims.
+
+    This reverts the padding by `pad_dims`.
+    """
+    if output.ndim == input.ndim:
+        return output
+
+    # restore the output to the original shape
+    outshp = tensor.join(0, input.shape[:-rightdims], output.shape[-rightdims:])
+    return GpuReshape(input.ndim)(output, outshp)

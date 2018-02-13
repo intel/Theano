@@ -1,16 +1,15 @@
 from __future__ import absolute_import, print_function, division
 import numpy as np
-import numpy
-import warnings
 from six.moves import xrange
 
 import theano
 from theano.tensor import basic
 from theano.tensor import nlinalg  # noqa
 from theano import gof, scalar
-from theano.gof import Generic
+from theano.gof import Generic, ParamsType, EnumList
 from theano import gradient
 from theano.gradient import DisconnectedType, disconnected_type
+from theano.scalar import int32 as int_t
 tensor = basic
 
 
@@ -22,6 +21,7 @@ class CpuContiguous(theano.Op):
 
     __props__ = ()
     view_map = {0: [0]}
+    check_input = False
 
     def make_node(self, x):
         x_ = theano.tensor.as_tensor_variable(x)
@@ -83,6 +83,7 @@ class SearchsortedOp(theano.Op):
 
     params_type = Generic()
     __props__ = ("side", )
+    check_input = False
 
     def __init__(self, side='left'):
         if side == 'left' or side == 'right':
@@ -243,13 +244,22 @@ def searchsorted(x, v, side='left', sorter=None):
     return SearchsortedOp(side=side)(x, v, sorter)
 
 
-class CumsumOp(theano.Op):
-    # See function cumsum for docstring
+class CumOp(theano.Op):
+    # See function cumsum/cumprod for docstring
 
-    __props__ = ("axis",)
+    __props__ = ("axis", "mode")
+    check_input = False
+    params_type = ParamsType(c_axis=int_t,
+                             mode=EnumList(('MODE_ADD', 'add'),
+                                           ('MODE_MUL', 'mul')))
 
-    def __init__(self, axis=None):
+    def __init__(self, axis=None, mode='add'):
+        if mode not in ('add', 'mul'):
+            raise ValueError('%s: Unknown mode "%s"' % (type(self).__name__, mode))
         self.axis = axis
+        self.mode = mode
+
+    c_axis = property(lambda self: np.MAXDIMS if self.axis is None else self.axis)
 
     def make_node(self, x):
         x = basic.as_tensor_variable(x)
@@ -262,23 +272,42 @@ class CumsumOp(theano.Op):
 
         return theano.Apply(self, [x], [out_type])
 
-    def perform(self, node, inputs, output_storage):
+    def perform(self, node, inputs, output_storage, params):
         x = inputs[0]
         z = output_storage[0]
-        z[0] = np.cumsum(x, axis=self.axis)
+        z[0] = {'add': np.cumsum, 'mul': np.cumprod}[self.mode](x, axis=self.axis)
 
     def grad(self, inputs, output_gradients):
-        [gi] = output_gradients
+        x, = inputs
+        gi, = output_gradients
 
         if self.axis is None:
-            return [cumsum(gi[::-1])[::-1].reshape(inputs[0].shape)]
+            if self.mode == 'add':
+                return [cumsum(gi[::-1])[::-1].reshape(x.shape)]
+            elif self.mode == 'mul':
+                fx = cumprod(x, axis=self.axis)
+                return [cumsum(
+                    (fx * gi)[::-1])[::-1].reshape(x.shape) / x]
+            else:
+                raise NotImplementedError(
+                    '%s: unknown gradient for mode "%s"' %
+                    (type(self).__name__, self.mode))
 
-        # We need to reverse the gradients along ``self.axis``,
-        #  compute cumsum, then reverse again
         reverse_slicing = [slice(None, None, None)] * gi.ndim
         reverse_slicing[self.axis] = slice(None, None, -1)
         reverse_slicing = tuple(reverse_slicing)
-        return [cumsum(gi[reverse_slicing], self.axis)[reverse_slicing]]
+        # We need to reverse the gradients along ``self.axis``,
+        #  compute cumsum, then reverse again
+        if self.mode == 'add':
+            return [cumsum(gi[reverse_slicing], self.axis)[reverse_slicing]]
+        elif self.mode == 'mul':
+            fx = cumprod(x, axis=self.axis)
+            return [cumsum(
+                (fx * gi)[reverse_slicing], self.axis)[reverse_slicing] / x]
+        else:
+            raise NotImplementedError(
+                '%s: unknown gradient for mode "%s"' %
+                (type(self).__name__, self.mode))
 
     def infer_shape(self, node, shapes):
         if self.axis is None:
@@ -291,48 +320,43 @@ class CumsumOp(theano.Op):
         z, = onames
         axis = self.axis
         fail = sub['fail']
+        params = sub['params']
 
-        if self.axis is None or (self.axis == 0 and node.inputs[0].ndim == 1):
-            code = """
+        code = """
+                int axis = %(params)s->c_axis;
+                if (axis == 0 && PyArray_NDIM(%(x)s) == 1)
+                    axis = NPY_MAXDIMS;
                 npy_intp shape[1] = { PyArray_SIZE(%(x)s) };
-                if(!(%(z)s && PyArray_DIMS(%(z)s)[0] == shape[0]))
+                if(axis == NPY_MAXDIMS && !(%(z)s && PyArray_DIMS(%(z)s)[0] == shape[0]))
                 {
                     Py_XDECREF(%(z)s);
                     %(z)s = (PyArrayObject*) PyArray_SimpleNew(1, shape, PyArray_TYPE((PyArrayObject*) py_%(x)s));
                 }
 
-                if (!%(z)s)
-                    %(fail)s;
-                {
-                    PyObject * t = PyArray_CumSum(
-                        %(x)s, NPY_MAXDIMS,
-                        PyArray_TYPE((PyArrayObject*) py_%(x)s), %(z)s);
-                    if (!t){
-                       %(fail)s;
-                    }
-                    // Because PyArray_CumSum returns a newly created reference on t.
-                    Py_XDECREF(t);
-                }
-            """ % locals()
-        else:
-            code = """
-                if(!(%(z)s && PyArray_CompareLists(PyArray_DIMS(%(z)s), PyArray_DIMS(%(x)s), PyArray_NDIM(%(x)s))))
+                else if(axis != NPY_MAXDIMS && !(%(z)s && PyArray_CompareLists(PyArray_DIMS(%(z)s), PyArray_DIMS(%(x)s), PyArray_NDIM(%(x)s))))
                 {
                     Py_XDECREF(%(z)s);
-                    %(z)s = (PyArrayObject*) PyArray_SimpleNew(PyArray_NDIM(%(x)s), PyArray_DIMS(%(x)s), PyArray_TYPE((PyArrayObject*) py_%(x)s));
+                    %(z)s = (PyArrayObject*) PyArray_SimpleNew(PyArray_NDIM(%(x)s), PyArray_DIMS(%(x)s), PyArray_TYPE(%(x)s));
                 }
 
                 if (!%(z)s)
                     %(fail)s;
                 {
 
-                    PyObject * t = PyArray_CumSum(
-                        %(x)s, %(axis)s,
-                        PyArray_TYPE((PyArrayObject*) py_%(x)s), %(z)s);
+                    PyObject * t = NULL;
+                    if(%(params)s->mode == MODE_ADD)
+                        t = PyArray_CumSum(
+                            %(x)s, axis,
+                            PyArray_TYPE(%(x)s), %(z)s);
+                    else if(%(params)s->mode == MODE_MUL)
+                        t = PyArray_CumProd(
+                            %(x)s, axis,
+                            PyArray_TYPE(%(x)s), %(z)s);
+
                     if (!t){
                        %(fail)s;
                     }
-                    // Because PyArray_CumSum returns a newly created reference on t.
+                    // Because PyArray_CumSum/CumProd returns a newly created reference on t.
                     Py_XDECREF(t);
                 }
             """ % locals()
@@ -340,10 +364,10 @@ class CumsumOp(theano.Op):
         return code
 
     def c_code_cache_version(self):
-        return (6,)
+        return (8,)
 
     def __str__(self):
-        return "%s{%s}" % (self.__class__.__name__, self.axis)
+        return "%s{%s, %s}" % (self.__class__.__name__, self.axis, self.mode)
 
 
 def cumsum(x, axis=None):
@@ -359,115 +383,11 @@ def cumsum(x, axis=None):
         The axis along which the cumulative sum is computed.
         The default (None) is to compute the cumsum over the flattened array.
 
+
     .. versionadded:: 0.7
 
     """
-    return CumsumOp(axis=axis)(x)
-
-
-class CumprodOp(theano.Op):
-    # See function cumprod for docstring
-
-    __props__ = ("axis",)
-
-    def __init__(self, axis=None):
-        self.axis = axis
-
-    def make_node(self, x):
-        x = basic.as_tensor_variable(x)
-        out_type = x.type()
-
-        if self.axis is None:
-            out_type = theano.tensor.vector(dtype=x.dtype)  # Flatten
-        elif self.axis >= x.ndim or self.axis < -x.ndim:
-            raise ValueError('axis(={0}) out of bounds'.format(self.axis))
-
-        return theano.Apply(self, [x], [out_type])
-
-    def perform(self, node, inputs, output_storage):
-        x = inputs[0]
-        z = output_storage[0]
-        z[0] = np.cumprod(x, axis=self.axis)
-
-    def grad(self, inputs, output_gradients):
-        x, = inputs
-        gi, = output_gradients
-        fx = cumprod(x, axis=self.axis)
-
-        if self.axis is None:
-            return [cumsum((fx * gi)[::-1])[::-1].reshape(inputs[0].shape) / x]
-
-        # We need to reverse the gradients along ``self.axis``,
-        #  compute cumsum, then reverse again
-        reverse_slicing = [slice(None, None, None)] * gi.ndim
-        reverse_slicing[self.axis] = slice(None, None, -1)
-        reverse_slicing = tuple(reverse_slicing)
-        return [cumsum((fx * gi)[reverse_slicing],
-                       self.axis)[reverse_slicing] / x]
-
-    def infer_shape(self, node, shapes):
-        if self.axis is None:
-            return [(tensor.prod(shapes[0]),)]  # Flatten
-
-        return shapes
-
-    def c_code(self, node, name, inames, onames, sub):
-        x, = inames
-        z, = onames
-        axis = self.axis
-        fail = sub['fail']
-
-        if self.axis is None or (self.axis == 0 and node.inputs[0].ndim == 1):
-            code = """
-                npy_intp shape[1] = { PyArray_SIZE(%(x)s) };
-                if(!(%(z)s && PyArray_DIMS(%(z)s)[0] == shape[0]))
-                {
-                    Py_XDECREF(%(z)s);
-                    %(z)s = (PyArrayObject*) PyArray_SimpleNew(1, shape, PyArray_TYPE((PyArrayObject*) py_%(x)s));
-                }
-
-                if (!%(z)s)
-                    %(fail)s;
-                {
-                    PyObject * t = PyArray_CumProd(
-                        %(x)s, NPY_MAXDIMS,
-                        PyArray_TYPE((PyArrayObject*) py_%(x)s), %(z)s);
-                    if (!t){
-                       %(fail)s;
-                    }
-                    // Because PyArray_CumSum returns a newly created reference on t.
-                    Py_XDECREF(t);
-                }
-            """ % locals()
-        else:
-            code = """
-                if(!(%(z)s && PyArray_CompareLists(PyArray_DIMS(%(z)s), PyArray_DIMS(%(x)s), PyArray_NDIM(%(x)s)) ))
-                {
-                    Py_XDECREF(%(z)s);
-                    %(z)s = (PyArrayObject*) PyArray_SimpleNew(PyArray_NDIM(%(x)s), PyArray_DIMS(%(x)s), PyArray_TYPE((PyArrayObject*) py_%(x)s));
-                }
-
-                if (!%(z)s)
-                    %(fail)s;
-                {
-                    PyObject * t = PyArray_CumProd(
-                        %(x)s, %(axis)s,
-                        PyArray_TYPE((PyArrayObject*) py_%(x)s), %(z)s);
-                    if (!t){
-                       %(fail)s;
-                    }
-                    // Because PyArray_CumSum returns a newly created reference on t.
-                    Py_XDECREF(t);
-                }
-            """ % locals()
-
-        return code
-
-    def c_code_cache_version(self):
-        return (4,)
-
-    def __str__(self):
-        return "%s{%s}" % (self.__class__.__name__, self.axis)
+    return CumOp(axis=axis, mode='add')(x)
 
 
 def cumprod(x, axis=None):
@@ -484,10 +404,31 @@ def cumprod(x, axis=None):
         The axis along which the cumulative product is computed.
         The default (None) is to compute the cumprod over the flattened array.
 
+
     .. versionadded:: 0.7
 
     """
-    return CumprodOp(axis=axis)(x)
+    return CumOp(axis=axis, mode='mul')(x)
+
+
+# CumsumOp and CumprodOp are for compatibility with old version,
+# just in case unpickling a theano function with old Ops.
+class CumsumOp(theano.Op):
+    __props__ = ("axis",)
+
+    def __new__(typ, *args, **kwargs):
+        obj = object.__new__(CumOp, *args, **kwargs)
+        obj.mode = 'add'
+        return obj
+
+
+class CumprodOp(theano.Op):
+    __props__ = ("axis",)
+
+    def __new__(typ, *args, **kwargs):
+        obj = object.__new__(CumOp, *args, **kwargs)
+        obj.mode = 'mul'
+        return obj
 
 
 class DiffOp(theano.Op):
@@ -555,107 +496,11 @@ def diff(x, n=1, axis=-1):
     axis
         The axis along which the difference is taken, default is the last axis.
 
+
     .. versionadded:: 0.6
 
     """
     return DiffOp(n=n, axis=axis)(x)
-
-
-class BinCountOp(theano.Op):
-    """
-    .. note:: Deprecated
-              Use bincount() instead.
-              See function bincount for docstring.
-
-    """
-    compatible_type = ('int8', 'int16', 'int32', 'int64',
-                       'uint8', 'uint16', 'uint32', 'uint64')
-    """Tuple of all compatible dtype for the parameter of this op."""
-    __props__ = ("minlength",)
-
-    def __init__(self, minlength=None):
-        self.minlength = minlength
-        if minlength is not None:
-            numpy_ver = [int(n) for n in numpy.__version__.split('.')[:2]]
-            if not bool(numpy_ver >= [1, 6]):
-                raise NotImplementedError(
-                    "BinCountOp with minlength attribute"
-                    " requires NumPy 1.6 or higher.")
-
-    def make_node(self, x, weights):
-        warnings.warn((
-            "Tile op is deprecated, use tile function instead."),
-            stacklevel=3)
-
-        x = basic.as_tensor_variable(x)
-
-        if x.dtype not in BinCountOp.compatible_type:
-            raise TypeError("Inputs dtype must be an integer.")
-
-        # Some dtypes are not supported by numpy's implementation of bincount.
-        # Until another one is available, we should fail at graph construction
-        # time, not wait for execution.
-        int_bitwidth = theano.configdefaults.python_int_bitwidth()
-        if int_bitwidth == 64:
-            numpy_unsupported_dtypes = ('uint64',)
-        if int_bitwidth == 32:
-            numpy_unsupported_dtypes = ('uint32', 'int64', 'uint64')
-        intp_bitwidth = theano.configdefaults.local_bitwidth()
-        if intp_bitwidth == 32:
-            out_type = basic.ivector()
-        elif intp_bitwidth == 64:
-            out_type = basic.lvector()
-
-        if x.dtype in numpy_unsupported_dtypes:
-            raise TypeError(
-                ("Input dtypes %s are not supported by numpy.bincount, "
-                 % numpy_unsupported_dtypes), x.dtype)
-
-        if x.ndim != 1:
-            raise TypeError("Inputs must be of dimension 1.")
-
-        if weights is None:
-            weights = theano.gof.Constant(theano.gof.Generic(), None)
-        else:
-            weights = basic.as_tensor_variable(weights)
-            out_type = basic.dvector()
-            if weights.ndim != 1:
-                raise TypeError("Weights cannot have a number of"
-                                "dimension different of 1.")
-
-        return theano.Apply(self, [x, weights], [out_type])
-
-    def perform(self, node, inputs, output_storage):
-        x = inputs[0]
-        weights = inputs[1]
-        z = output_storage[0]
-
-        if weights is not None and weights.shape != x.shape:
-            raise TypeError("All inputs must have the same shape.")
-
-        # Needed for numpy 1.4.1 compatibility
-        if self.minlength:
-            out = np.bincount(x, weights=weights, minlength=self.minlength)
-        else:
-            out = np.bincount(x, weights=weights)
-
-        z[0] = theano._asarray(out, dtype=node.outputs[0].dtype)
-
-    def grad(self, inputs, outputs_gradients):
-        output = self(*inputs)
-
-        if output.dtype.find('int') != -1:
-            return [inp.zeros_like().astype(theano.config.floatX)
-                    for inp in inputs]
-
-        raise NotImplementedError()
-
-    def infer_shape(self, node, ins_shapes):
-        x = node.inputs[0]
-        m = basic.max(x) + 1
-        if self.minlength is not None:
-            m = basic.maximum(m, self.minlength)
-        return [[m]]
 
 
 def bincount(x, weights=None, minlength=None, assert_nonneg=False):
@@ -679,6 +524,7 @@ def bincount(x, weights=None, minlength=None, assert_nonneg=False):
     assert_nonneg : A flag that inserts an assert_op to check if
         every input x is nonnegative.
         Optional.
+
 
     .. versionadded:: 0.6
 
@@ -773,7 +619,7 @@ class RepeatOp(theano.Op):
         x = basic.as_tensor_variable(x)
         repeats = basic.as_tensor_variable(repeats)
 
-        if repeats.dtype not in tensor.discrete_dtypes:
+        if repeats.dtype not in tensor.integer_dtypes:
             raise TypeError("repeats.dtype must be an integer.")
 
         # Some dtypes are not supported by numpy's implementation of repeat.
@@ -886,7 +732,8 @@ def repeat(x, repeats, axis=None):
     ----------
     x
         Input data, tensor variable.
-    repeats : int, scalar or tensor variable
+    repeats
+        int, scalar or tensor variable
     axis : int, optional
 
     See Also
@@ -933,7 +780,7 @@ def repeat(x, repeats, axis=None):
         shape[axis] = shape[axis] * repeats
 
         # dims_ is the dimension of that intermediate tensor.
-        dims_ = list(numpy.arange(x.ndim))
+        dims_ = list(np.arange(x.ndim))
         dims_.insert(axis + 1, 'x')
 
         # After the original tensor is duplicated along the additional
@@ -952,8 +799,7 @@ class Bartlett(gof.Op):
         if M.ndim != 0:
             raise TypeError('%s only works on scalar input'
                             % self.__class__.__name__)
-        elif (not M.dtype.startswith('int') and
-              not M.dtype.startswith('uint')):
+        elif M.dtype not in theano.tensor.integer_dtypes:
             # dtype is a theano attribute here
             raise TypeError('%s only works on integer input'
                             % self.__class__.__name__)
@@ -962,7 +808,7 @@ class Bartlett(gof.Op):
     def perform(self, node, inputs, out_):
         M = inputs[0]
         out, = out_
-        out[0] = numpy.bartlett(M)
+        out[0] = np.bartlett(M)
 
     def infer_shape(self, node, in_shapes):
         temp = node.inputs[0]
@@ -1038,7 +884,7 @@ class FillDiagonal(gof.Op):
             # Write the value out into the diagonal.
             a.flat[:end:step] = val
         else:
-            numpy.fill_diagonal(a, val)
+            np.fill_diagonal(a, val)
 
         output_storage[0][0] = a
 
@@ -1122,7 +968,7 @@ class FillDiagonalOffset(gof.Op):
         if val.dtype != a.dtype:
             raise TypeError('%s: type of second parameter must be the same'
                             ' as the first\'s' % self.__class__.__name__)
-        elif offset.dtype[:3] != 'int':
+        elif offset.dtype not in theano.tensor.integer_dtypes:
             raise TypeError('%s: type of third parameter must be as integer'
                             ' use theano.tensor.cast( input, \'int32/int64\')'
                             % self.__class__.__name__)
@@ -1288,7 +1134,7 @@ class Unique(theano.Op):
         self.return_index = return_index
         self.return_inverse = return_inverse
         self.return_counts = return_counts
-        numpy_ver = [int(n) for n in numpy.__version__.split('.')[:2]]
+        numpy_ver = [int(n) for n in np.__version__.split('.')[:2]]
         if self.return_counts and bool(numpy_ver < [1, 9]):
             raise RuntimeError(
                 "Numpy version = " + np.__version__ +
@@ -1336,3 +1182,174 @@ class Unique(theano.Op):
             ret[1] = shape
             return ret
         return ret
+
+
+class UnravelIndex(gof.Op):
+    __props__ = ('ndim', 'order')
+
+    def __init__(self, ndim, order='C'):
+        assert order in ('C', 'F')
+        if not isinstance(ndim, int) or ndim < 1:
+            raise ValueError('ndim must be an integer greater than 0')
+        self.ndim = int(ndim)
+        self.order = order
+
+    def make_node(self, indices, dims):
+        indices = basic.as_tensor_variable(indices)
+        dims = basic.as_tensor_variable(dims)
+
+        if indices.dtype not in basic.int_dtypes:
+            raise TypeError("'%s' object cannot be interpreted as an index" % str(indices.dtype))
+        if dims.dtype not in basic.int_dtypes:
+            raise TypeError("'%s' object cannot be interpreted as an index" % str(dims.dtype))
+        if dims.ndim != 1:
+            raise TypeError("dims must be a 1D array")
+
+        return gof.Apply(
+            self, [indices, dims],
+            [basic.TensorType(dtype='int64', broadcastable=(False,) * indices.ndim)()
+             for i in xrange(self.ndim)])
+
+    def infer_shape(self, node, input_shapes):
+        return [input_shapes[0]] * len(node.outputs)
+
+    def perform(self, node, inp, out):
+        indices, dims = inp
+        res = np.unravel_index(indices, dims)
+        assert len(res) == len(out)
+        for i in xrange(len(out)):
+            ret = theano._asarray(res[i], node.outputs[0].dtype)
+            if ret.base is not None:
+                # NumPy will return a view when it can.
+                # But we don't want that.
+                ret = ret.copy()
+            out[i][0] = ret
+
+
+def unravel_index(indices, dims, order='C', ndim=None):
+    """
+    Converts a flat index or array of flat indices into a tuple
+    of coordinate arrays.
+
+    This method is similar to the NumPy version, except for the
+    additional ``ndim`` parameter. This parameter is required if
+    the length of ``dims`` cannot be determined automatically.
+
+    Parameters
+    ----------
+    indices : Theano or NumPy array
+        An integer array whose elements are indices into the flattened
+        version of an array of dimensions ``dims``.
+    dims : tuple of ints
+        The shape of the array to use for unraveling ``indices``.
+    order : {'C', 'F'}, optional
+        Determines whether the indices should be viewed as indexing in
+        row-major (C-style) or column-major (Fortran-style) order.
+    ndim : int, optional
+        Specifies the number of dimensions, i.e., the length of
+        ``dims``. This is required if the dimensions cannot be determined
+        automatically from ``dims`` itself.
+
+    Returns
+    -------
+    unraveled_coords : tuple of ndarray
+        Each array in the tuple has the same shape as the ``indices``
+        array.
+
+    See Also
+    --------
+    ravel_multi_index
+
+    """
+    if ndim is None:
+        try:
+            ndim = basic.get_vector_length(dims)
+        except ValueError:
+            raise ValueError(
+                "The length of the provided dimension list (%s) cannot "
+                "be automatically determined, so Theano is not able "
+                "to know what the number of dimensions of the unraveled "
+                "index will be. You can provide the 'ndim' keyword "
+                "argument to 'unravel_index' to avoid this problem." % str(dims))
+
+    res = UnravelIndex(ndim=ndim, order=order)(indices, dims)
+    if ndim == 1:
+        return (res,)
+    else:
+        return tuple(res)
+
+
+class RavelMultiIndex(gof.Op):
+    __props__ = ('mode', 'order')
+
+    def __init__(self, mode='raise', order='C'):
+        assert mode in ('raise', 'wrap', 'clip')
+        assert order in ('C', 'F')
+        self.mode = mode
+        self.order = order
+
+    def make_node(self, *inp):
+        multi_index = [basic.as_tensor_variable(i) for i in inp[:-1]]
+        dims = basic.as_tensor_variable(inp[-1])
+
+        for i in multi_index:
+            if i.dtype not in basic.int_dtypes:
+                raise TypeError("'%s' object cannot be interpreted as an index" % str(i.dtype))
+        if dims.dtype not in basic.int_dtypes:
+            raise TypeError("'%s' object cannot be interpreted as an index" % str(dims.dtype))
+        if dims.ndim != 1:
+            raise TypeError("dims must be a 1D array")
+
+        return gof.Apply(
+            self, multi_index + [dims],
+            [basic.TensorType(dtype='int64', broadcastable=(False,) * multi_index[0].ndim)()])
+
+    def infer_shape(self, node, input_shapes):
+        return [input_shapes[0]]
+
+    def perform(self, node, inp, out):
+        multi_index, dims = inp[:-1], inp[-1]
+        res = np.ravel_multi_index(multi_index, dims,
+                                   mode=self.mode, order=self.order)
+        out[0][0] = theano._asarray(res, node.outputs[0].dtype)
+
+
+def ravel_multi_index(multi_index, dims, mode='raise', order='C'):
+    """
+    Converts a tuple of index arrays into an array of flat
+    indices, applying boundary modes to the multi-index.
+
+    Parameters
+    ----------
+    multi_index : tuple of Theano or NumPy arrays
+        A tuple of integer arrays, one array for each dimension.
+    dims : tuple of ints
+        The shape of array into which the indices from ``multi_index`` apply.
+    mode : {'raise', 'wrap', 'clip'}, optional
+        Specifies how out-of-bounds indices are handled.  Can specify
+        either one mode or a tuple of modes, one mode per index.
+        * 'raise' -- raise an error (default)
+        * 'wrap' -- wrap around
+        * 'clip' -- clip to the range
+        In 'clip' mode, a negative index which would normally
+        wrap will clip to 0 instead.
+    order : {'C', 'F'}, optional
+        Determines whether the multi-index should be viewed as
+        indexing in row-major (C-style) or column-major
+        (Fortran-style) order.
+
+    Returns
+    -------
+    raveled_indices : Theano array
+        An array of indices into the flattened version of an array
+        of dimensions ``dims``.
+
+    See Also
+    --------
+    unravel_index
+
+    """
+    if not isinstance(multi_index, (tuple, list)):
+        raise TypeError('multi_index must be a tuple or a list.')
+    args = tuple(multi_index) + (dims,)
+    return RavelMultiIndex(mode=mode, order=order)(*args)

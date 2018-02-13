@@ -9,6 +9,29 @@ Installation
 Stable Installation
 -------------------
 
+With ``conda``
+^^^^^^^^^^^^^^
+
+If you use conda, you can directly install both theano and pygpu. Libgpuarray
+will be automatically installed as a dependency of pygpu.
+
+.. code-block:: bash
+
+    conda install theano pygpu
+
+.. warning::
+
+    Latest conda packages for theano (``>= 0.9``) and pygpu (``>= 0.6*``) currently don't support
+    Python 3.4 branch.
+
+With ``pip``
+^^^^^^^^^^^^
+
+If you use pip, you have to install Theano and libgpuarray separately.
+
+theano
+::::::
+
 Install the latest stable version of Theano with:
 
 .. raw:: html
@@ -27,20 +50,15 @@ Install the latest stable version of Theano with:
 
 If you encountered any trouble, head to the :ref:`troubleshooting` page.
 
+The latest stable version of Theano is ``1.0.1`` (tagged with ``rel-1.0.1``).
+
 libgpuarray
-^^^^^^^^^^^
+:::::::::::
 
-For the stable version of Theano you need a specific version of libgpuarray, 
-that has been tagged ``v-9998``.
-Download it with:
+Download it with::
 
-.. raw:: html
-
-    <div class='highlight'><pre>
-    git clone https://github.com/Theano/libgpuarray.git --tags
-    git checkout origin/v-9998
+    git clone https://github.com/Theano/libgpuarray.git
     cd libgpuarray
-    </pre></div>
 
 and then follow the `Step-by-step instructions <http://deeplearning.net/software/libgpuarray/installation.html#step-by-step-install>`__.
 
@@ -70,6 +88,12 @@ libgpuarray
 Install the latest, development version of libgpuarray following the
 `Step-by-step instructions <http://deeplearning.net/software/libgpuarray/installation.html#step-by-step-install>`__.
 
+.. note::
+
+    Currently, you need ``libgpuarray`` version ``0.7.X`` that is not in conda default channel.
+    But you can install it with our own channel ``mila-udem`` (that only supports Python 2.7, 3.5 and 3.6)::
+
+        conda install -c mila-udem pygpu
 
 Developer Installation
 ----------------------
@@ -98,5 +122,4 @@ If you encountered any trouble, head to the :ref:`troubleshooting` page.
 libgpuarray
 ^^^^^^^^^^^
 
-Install the latest, development version of libgpuarray following the
-`Step-by-step instructions <http://deeplearning.net/software/libgpuarray/installation.html#step-by-step-install>`__.
+See instructions for bleeding-edge installation about ``libgpuarray``.

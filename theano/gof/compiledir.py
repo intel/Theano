@@ -4,11 +4,11 @@ import logging
 import os
 import shutil
 
-import numpy
+import numpy as np
 
 import theano
 from six import string_types, iteritems
-from theano.configparser import config
+from theano import config
 from theano.gof.utils import flatten
 
 
@@ -42,7 +42,7 @@ def cleanup():
                         have_npy_abi_version = False
                         have_c_compiler = False
                         for obj in flatten(key):
-                            if isinstance(obj, numpy.ndarray):
+                            if isinstance(obj, np.ndarray):
                                 # Reuse have_npy_abi_version to
                                 # force the removing of key
                                 have_npy_abi_version = False
@@ -77,7 +77,7 @@ def cleanup():
                     if len(keydata.keys) == 0:
                         shutil.rmtree(os.path.join(compiledir, directory))
 
-                except EOFError:
+                except (EOFError, AttributeError):
                     _logger.error(
                         "Could not read key file '%s'. To complete "
                         "the clean-up, please remove manually "
@@ -93,6 +93,15 @@ def cleanup():
                 file.close()
 
 
+def print_title(title, overline='', underline=''):
+    len_title = len(title)
+    if overline:
+        print(str(overline) * len_title)
+    print(title)
+    if underline:
+        print(str(underline) * len_title)
+
+
 def print_compiledir_content():
     """
     print list of %d compiled individual ops in the "theano.config.compiledir"
@@ -101,7 +110,8 @@ def print_compiledir_content():
 
     compiledir = theano.config.compiledir
     table = []
-    more_than_one_ops = 0
+    table_multiple_ops = []
+    table_op_class = {}
     zeros_op = 0
     big_key_files = []
     total_key_sizes = 0
@@ -115,14 +125,30 @@ def print_compiledir_content():
                 keydata = pickle.load(file)
                 ops = list(set([x for x in flatten(keydata.keys)
                                 if isinstance(x, theano.gof.Op)]))
+                # Whatever the case, we count compilations for OP classes.
+                for op_class in set([op.__class__ for op in ops]):
+                    table_op_class.setdefault(op_class, 0)
+                    table_op_class[op_class] += 1
                 if len(ops) == 0:
                     zeros_op += 1
-                elif len(ops) > 1:
-                    more_than_one_ops += 1
                 else:
                     types = list(set([x for x in flatten(keydata.keys)
                                       if isinstance(x, theano.gof.Type)]))
-                    table.append((dir, ops[0], types))
+                    compile_start = compile_end = float('nan')
+                    for fn in os.listdir(os.path.join(compiledir, dir)):
+                        if fn.startswith('mod.c'):
+                            compile_start = os.path.getmtime(
+                                os.path.join(compiledir, dir, fn))
+                        elif fn.endswith('.so'):
+                            compile_end = os.path.getmtime(
+                                os.path.join(compiledir, dir, fn))
+                    compile_time = compile_end - compile_start
+                    if len(ops) == 1:
+                        table.append((dir, ops[0], types, compile_time))
+                    else:
+                        ops_to_str = '[%s]' % ', '.join(sorted(str(op) for op in ops))
+                        types_to_str = '[%s]' % ', '.join(sorted(str(t) for t in types))
+                        table_multiple_ops.append((dir, ops_to_str, types_to_str, compile_time))
 
                 size = os.path.getsize(filename)
                 total_key_sizes += size
@@ -133,20 +159,30 @@ def print_compiledir_content():
                 nb_keys[len(keydata.keys)] += 1
             except IOError:
                 pass
+            except AttributeError:
+                    _logger.error(
+                        "Could not read key file '%s'.",
+                        filename)
 
-    print("List of %d compiled individual ops in this theano cache %s:" % (
-        len(table), compiledir))
-    print("sub directory/Op/a set of the different associated Theano type")
+    print_title("Theano cache: %s" % compiledir, overline='=', underline='=')
+    print()
+
+    print_title("List of %d compiled individual ops" % len(table), underline='+')
+    print_title("sub dir/compiletime/Op/set of different associated Theano types", underline='-')
     table = sorted(table, key=lambda t: str(t[1]))
-    table_op_class = {}
-    for dir, op, types in table:
-        print(dir, op, types)
-        table_op_class.setdefault(op.__class__, 0)
-        table_op_class[op.__class__] += 1
+    for dir, op, types, compile_time in table:
+        print(dir, '%.3fs' % compile_time, op, types)
 
     print()
-    print(("List of %d individual compiled Op classes and "
-           "the number of times they got compiled" % len(table_op_class)))
+    print_title("List of %d compiled sets of ops" % len(table_multiple_ops), underline='+')
+    print_title("sub dir/compiletime/Set of ops/set of different associated Theano types", underline='-')
+    table_multiple_ops = sorted(table_multiple_ops, key=lambda t: (t[1], t[2]))
+    for dir, ops_to_str, types_to_str, compile_time in table_multiple_ops:
+        print(dir, '%.3fs' % compile_time, ops_to_str, types_to_str)
+
+    print()
+    print_title(("List of %d compiled Op classes and "
+                 "the number of times they got compiled" % len(table_op_class)), underline='+')
     table_op_class = sorted(iteritems(table_op_class), key=lambda t: t[1])
     for op_class, nb in table_op_class:
         print(op_class, nb)
@@ -165,13 +201,11 @@ def print_compiledir_content():
 
     nb_keys = sorted(iteritems(nb_keys))
     print()
-    print("Number of keys for a compiled module")
-    print("number of keys/number of modules with that number of keys")
+    print_title("Number of keys for a compiled module", underline='+')
+    print_title("number of keys/number of modules with that number of keys", underline='-')
     for n_k, n_m in nb_keys:
         print(n_k, n_m)
-
-    print(("Skipped %d files that contained more than"
-           " 1 op (was compiled with the C linker)" % more_than_one_ops))
+    print()
     print(("Skipped %d files that contained 0 op "
            "(are they always theano.scalar ops?)" % zeros_op))
 

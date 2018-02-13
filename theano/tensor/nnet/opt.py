@@ -10,6 +10,8 @@ from theano.gof.opt import copy_stack_trace
 
 from theano.tensor.nnet.corr import (
     CorrMM, CorrMM_gradInputs, CorrMM_gradWeights)
+from theano.tensor.nnet.corr3d import (
+    Corr3dMM, Corr3dMM_gradInputs, Corr3dMM_gradWeights)
 from theano.tensor.nnet.blocksparse import (
     SparseBlockGemv,
     SparseBlockOuter,
@@ -18,6 +20,9 @@ from theano.tensor.nnet.blocksparse import (
 from theano.tensor.nnet.abstract_conv import (AbstractConv2d,
                                               AbstractConv2d_gradWeights,
                                               AbstractConv2d_gradInputs)
+from theano.tensor.nnet.abstract_conv import (AbstractConv3d,
+                                              AbstractConv3d_gradWeights,
+                                              AbstractConv3d_gradInputs)
 from theano.tensor.nnet.abstract_conv import get_conv_output_shape
 from theano.tensor.opt import register_specialize_device
 from theano.tensor import TensorType
@@ -25,8 +30,6 @@ from theano.tensor import opt
 
 # Cpu implementation
 from theano.tensor.nnet.conv import conv2d, ConvOp
-from theano.tensor.nnet.ConvGrad3D import convGrad3D
-from theano.tensor.nnet.ConvTransp3D import convTransp3D
 
 
 @gof.local_optimizer([SparseBlockGemv], inplace=True)
@@ -66,7 +69,9 @@ compile.optdb.register('local_inplace_sparse_block_outer',
 # Conv opts
 @local_optimizer([AbstractConv2d])
 def local_abstractconv_gemm(node):
-    if theano.config.cxx == "" or not theano.config.blas.ldflags:
+    # If theano.config.blas.ldflags is empty, Theano will use
+    # a NumPy C implementation of [sd]gemm_.
+    if theano.config.cxx == "" or node.inputs[0].dtype == 'float16':
         return
     if not isinstance(node.op, AbstractConv2d):
         return None
@@ -77,10 +82,39 @@ def local_abstractconv_gemm(node):
 
     # need to flip the kernel if necessary
     if node.op.filter_flip:
-        kern = kern[:, :, ::-1, ::-1]
+        flip = (slice(None),) * (kern.ndim - 2) + \
+            (slice(None, None, -1),) * 2
+        kern = kern[flip]
     rval = CorrMM(border_mode=node.op.border_mode,
                   subsample=node.op.subsample,
-                  filter_dilation=node.op.filter_dilation)(img, kern)
+                  filter_dilation=node.op.filter_dilation,
+                  num_groups=node.op.num_groups,
+                  unshared=node.op.unshared)(img, kern)
+    copy_stack_trace(node.outputs[0], rval)
+
+    return [rval]
+
+
+@local_optimizer([AbstractConv3d])
+def local_abstractconv3d_gemm(node):
+    # If theano.config.blas.ldflags is empty, Theano will use
+    # a NumPy C implementation of [sd]gemm_.
+    if theano.config.cxx == "" or node.inputs[0].dtype == 'float16':
+        return
+    if not isinstance(node.op, AbstractConv3d):
+        return None
+    img, kern = node.inputs
+    if not isinstance(img.type, TensorType) or \
+       not isinstance(kern.type, TensorType):
+        return None
+
+    # need to flip the kernel if necessary
+    if node.op.filter_flip:
+        kern = kern[:, :, ::-1, ::-1, ::-1]
+    rval = Corr3dMM(border_mode=node.op.border_mode,
+                    subsample=node.op.subsample,
+                    filter_dilation=node.op.filter_dilation,
+                    num_groups=node.op.num_groups)(img, kern)
     copy_stack_trace(node.outputs[0], rval)
 
     return [rval]
@@ -88,7 +122,9 @@ def local_abstractconv_gemm(node):
 
 @local_optimizer([AbstractConv2d_gradWeights])
 def local_abstractconv_gradweight_gemm(node):
-    if theano.config.cxx == "" or not theano.config.blas.ldflags:
+    # If theano.config.blas.ldflags is empty, Theano will use
+    # a NumPy C implementation of [sd]gemm_.
+    if theano.config.cxx == "" or node.inputs[0].dtype == 'float16':
         return
     if not isinstance(node.op, AbstractConv2d_gradWeights):
         return None
@@ -99,12 +135,44 @@ def local_abstractconv_gradweight_gemm(node):
 
     rval = CorrMM_gradWeights(border_mode=node.op.border_mode,
                               subsample=node.op.subsample,
-                              filter_dilation=node.op.filter_dilation)(img, topgrad, shape)
+                              filter_dilation=node.op.filter_dilation,
+                              num_groups=node.op.num_groups,
+                              unshared=node.op.unshared)(img, topgrad, shape)
     copy_stack_trace(node.outputs[0], rval)
 
     # need to flip the kernel if necessary
     if node.op.filter_flip:
-        rval = rval[:, :, ::-1, ::-1]
+        flip = (slice(None),) * (rval.ndim - 2) + \
+            (slice(None, None, -1),) * 2
+        rval = rval[flip]
+    rval = theano.tensor.patternbroadcast(rval, node.outputs[0].broadcastable)
+    copy_stack_trace(node.outputs[0], rval)
+
+    return [rval]
+
+
+@local_optimizer([AbstractConv3d_gradWeights])
+def local_abstractconv3d_gradweight_gemm(node):
+    # If theano.config.blas.ldflags is empty, Theano will use
+    # a NumPy C implementation of [sd]gemm_.
+    if theano.config.cxx == "" or node.inputs[0].dtype == 'float16':
+        return
+    if not isinstance(node.op, AbstractConv3d_gradWeights):
+        return None
+    img, topgrad, shape = node.inputs
+    if not isinstance(img.type, TensorType) or \
+       not isinstance(topgrad.type, TensorType):
+        return None
+
+    rval = Corr3dMM_gradWeights(border_mode=node.op.border_mode,
+                                subsample=node.op.subsample,
+                                filter_dilation=node.op.filter_dilation,
+                                num_groups=node.op.num_groups)(img, topgrad, shape)
+    copy_stack_trace(node.outputs[0], rval)
+
+    # need to flip the kernel if necessary
+    if node.op.filter_flip:
+        rval = rval[:, :, ::-1, ::-1, ::-1]
     rval = theano.tensor.patternbroadcast(rval, node.outputs[0].broadcastable)
     copy_stack_trace(node.outputs[0], rval)
 
@@ -113,7 +181,9 @@ def local_abstractconv_gradweight_gemm(node):
 
 @local_optimizer([AbstractConv2d_gradInputs])
 def local_abstractconv_gradinputs_gemm(node):
-    if theano.config.cxx == "" or not theano.config.blas.ldflags:
+    # If theano.config.blas.ldflags is empty, Theano will use
+    # a NumPy C implementation of [sd]gemm_.
+    if theano.config.cxx == "" or node.inputs[0].dtype == 'float16':
         return
     if not isinstance(node.op, AbstractConv2d_gradInputs):
         return None
@@ -124,11 +194,40 @@ def local_abstractconv_gradinputs_gemm(node):
 
     # need to flip the kernel if necessary
     if node.op.filter_flip:
-        kern = kern[:, :, ::-1, ::-1]
+        flip = (slice(None),) * (kern.ndim - 2) + \
+            (slice(None, None, -1),) * 2
+        kern = kern[flip]
     rval = CorrMM_gradInputs(border_mode=node.op.border_mode,
                              subsample=node.op.subsample,
-                             filter_dilation=node.op.filter_dilation)(kern, topgrad,
-                                                                      shape)
+                             filter_dilation=node.op.filter_dilation,
+                             num_groups=node.op.num_groups,
+                             unshared=node.op.unshared)(kern, topgrad, shape)
+    copy_stack_trace(node.outputs[0], rval)
+
+    return [rval]
+
+
+@local_optimizer([AbstractConv3d_gradInputs])
+def local_abstractconv3d_gradinputs_gemm(node):
+    # If theano.config.blas.ldflags is empty, Theano will use
+    # a NumPy C implementation of [sd]gemm_.
+    if theano.config.cxx == "" or node.inputs[0].dtype == 'float16':
+        return
+    if not isinstance(node.op, AbstractConv3d_gradInputs):
+        return None
+    kern, topgrad, shape = node.inputs
+    if not isinstance(kern.type, TensorType) or \
+       not isinstance(topgrad.type, TensorType):
+        return None
+
+    # need to flip the kernel if necessary
+    if node.op.filter_flip:
+        kern = kern[:, :, ::-1, ::-1, ::-1]
+    rval = Corr3dMM_gradInputs(border_mode=node.op.border_mode,
+                               subsample=node.op.subsample,
+                               filter_dilation=node.op.filter_dilation,
+                               num_groups=node.op.num_groups)(kern, topgrad,
+                                                              shape)
     copy_stack_trace(node.outputs[0], rval)
 
     return [rval]
@@ -137,7 +236,8 @@ def local_abstractconv_gradinputs_gemm(node):
 @local_optimizer([AbstractConv2d])
 def local_conv2d_cpu(node):
 
-    if not isinstance(node.op, AbstractConv2d):
+    if (not isinstance(node.op, AbstractConv2d) or
+            node.inputs[0].dtype == 'float16'):
         return None
 
     img, kern = node.inputs
@@ -148,6 +248,10 @@ def local_conv2d_cpu(node):
         return None
     if not node.op.filter_flip:
         # Not tested yet
+        return None
+    if node.op.num_groups > 1 or node.op.unshared:
+        return None
+    if node.op.filter_dilation != (1, 1):
         return None
 
     rval = conv2d(img, kern,
@@ -161,7 +265,8 @@ def local_conv2d_cpu(node):
 
 @local_optimizer([AbstractConv2d_gradWeights])
 def local_conv2d_gradweight_cpu(node):
-    if not isinstance(node.op, AbstractConv2d_gradWeights):
+    if (not isinstance(node.op, AbstractConv2d_gradWeights) or
+            node.inputs[0].dtype == 'float16'):
         return None
 
     img, topgrad, shape = node.inputs
@@ -174,31 +279,12 @@ def local_conv2d_gradweight_cpu(node):
     if not node.op.filter_flip:
         # Not tested yet
         return
+    if node.op.num_groups > 1 or node.op.unshared:
+        return None
 
     if node.op.border_mode == 'valid' and \
             (node.op.subsample != (1, 1)):
-        # Use the gradient as defined in conv3D, because the implementation
-        # by Conv is slow (about 3x slower than conv3D, and probably 10x
-        # slower than it could be), and incorrect when subsample > 2.
-        # build a "node", that should be equivalent to the one given by
-        # self.make_node, but using convGrad3D instead.
-        shuffled_img = img.dimshuffle(0, 2, 3, 'x', 1)
-        shuffled_topgrad = topgrad.dimshuffle(0, 2, 3, 'x', 1)
-        rval = convGrad3D(V=shuffled_img,
-                          d=(node.op.subsample[0], node.op.subsample[1], 1),
-                          WShape=(shuffled_topgrad.shape[4],
-                                  shape[0], shape[1], 1,
-                                  shuffled_img.shape[4]),
-                          dCdH=shuffled_topgrad)
-        copy_stack_trace(node.outputs[0], rval)
-
-        rval = theano.tensor.addbroadcast(rval, 3)
-        rval = rval.dimshuffle(0, 4, 1, 2)
-        rval = rval[:, :, ::-1, ::-1]
-        rval = theano.tensor.patternbroadcast(rval,
-                                              node.outputs[0].broadcastable)
-        copy_stack_trace(node.outputs[0], rval)
-        return [rval]
+        return None
 
     dx, dy = node.op.subsample
     if dx not in (1, 2) or dy not in (1, 2):
@@ -279,7 +365,8 @@ def local_conv2d_gradweight_cpu(node):
 
 @local_optimizer([AbstractConv2d_gradInputs])
 def local_conv2d_gradinputs_cpu(node):
-    if not isinstance(node.op, AbstractConv2d_gradInputs):
+    if (not isinstance(node.op, AbstractConv2d_gradInputs) or
+            node.inputs[0].dtype == 'float16'):
         return None
 
     kern, topgrad, shape = node.inputs
@@ -292,25 +379,13 @@ def local_conv2d_gradinputs_cpu(node):
     if not node.op.filter_flip:
         # Not tested yet
         return None
+    if node.op.num_groups > 1 or node.op.unshared:
+        return None
 
     # Conv 3d implementation, needed when subsample > 2
     if node.op.border_mode == 'valid' and node.op.subsample != (1, 1):
-        kern = kern[:, :, ::-1, ::-1]
-        shuffled_kern = kern.dimshuffle(0, 2, 3, 'x', 1)
-        shuffled_topgrad = topgrad.dimshuffle(0, 2, 3, 'x', 1)
-        b = theano.tensor.zeros_like(shuffled_kern[0, 0, 0, 0, :])
-        rval = convTransp3D(W=shuffled_kern, b=b,
-                            d=(node.op.subsample[0], node.op.subsample[1], 1),
-                            H=shuffled_topgrad,
-                            RShape=(shape[0], shape[1], 1))
-        copy_stack_trace(node.outputs[0], rval)
-        rval = theano.tensor.addbroadcast(rval, 3)
-        rval = rval.dimshuffle(0, 4, 1, 2)
-        rval = theano.tensor.patternbroadcast(rval,
-                                              node.outputs[0].broadcastable)
-
-        copy_stack_trace(node.outputs[0], rval)
-        return [rval]
+        # The op don't support that anymore.
+        return False
 
     # Conv2d Implementation
     dx, dy = node.op.subsample
@@ -381,6 +456,15 @@ conv_groupopt.register('local_abstractconv_gradweight_gemm',
 conv_groupopt.register('local_abstractconv_gradinputs_gemm',
                        local_abstractconv_gradinputs_gemm, 30,
                        'conv_gemm', 'fast_compile', 'fast_run')
+conv_groupopt.register('local_abstractconv3d_gemm', local_abstractconv3d_gemm, 30,
+                       'conv_gemm', 'fast_compile', 'fast_run')
+conv_groupopt.register('local_abstractconv3d_gradweight_gemm',
+                       local_abstractconv3d_gradweight_gemm, 30,
+                       'conv_gemm', 'fast_compile', 'fast_run')
+conv_groupopt.register('local_abstractconv3d_gradinputs_gemm',
+                       local_abstractconv3d_gradinputs_gemm, 30,
+                       'conv_gemm', 'fast_compile', 'fast_run')
+
 # Legacy convolution
 conv_groupopt.register('local_conv2d_cpu', local_conv2d_cpu, 40,
                        'fast_compile', 'fast_run')
@@ -395,20 +479,26 @@ conv_groupopt.register('local_conv2d_gradinputs_cpu',
 # Verify that no AbstractConv are present in the graph
 @local_optimizer([AbstractConv2d,
                   AbstractConv2d_gradWeights,
-                  AbstractConv2d_gradInputs])
+                  AbstractConv2d_gradInputs,
+                  AbstractConv3d,
+                  AbstractConv3d_gradWeights,
+                  AbstractConv3d_gradInputs])
 def local_abstractconv_check(node):
     if isinstance(node.op, (AbstractConv2d,
                             AbstractConv2d_gradWeights,
-                            AbstractConv2d_gradInputs)):
-        raise AssertionError(
+                            AbstractConv2d_gradInputs,
+                            AbstractConv3d,
+                            AbstractConv3d_gradWeights,
+                            AbstractConv3d_gradInputs)):
+        raise gof.opt.LocalMetaOptimizerSkipAssertionError(
             '%s Theano optimization failed: there is no implementation '
             'available supporting the requested options. Did you exclude '
             'both "conv_dnn" and "conv_gemm" from the optimizer? If on GPU, '
             'is cuDNN available and does the GPU support it? If on CPU, '
-            'do you have a BLAS library installed Theano can link against?' %
+            'do you have a BLAS library installed Theano can link against? '
+            'On the CPU we do not support float16.' %
             node.op.__class__.__name__)
 
 optdb.register('AbstractConvCheck',
-               opt.in2out(local_abstractconv_check,
-                          name="AbstractConvCheck"),
+               opt.in2out(local_abstractconv_check, name="AbstractConvCheck"),
                48.7, 'fast_compile', 'fast_run')

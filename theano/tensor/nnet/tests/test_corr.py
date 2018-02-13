@@ -3,14 +3,15 @@ from __future__ import absolute_import, print_function, division
 from nose.plugins.skip import SkipTest
 from nose.plugins.attrib import attr
 from nose.tools import assert_equals
-import numpy
+import numpy as np
 from six import integer_types
 
 import theano
 import theano.tensor as T
 from theano.tests import unittest_tools as utt
 from theano.tensor.nnet import corr, conv
-from theano.tensor.basic import _allclose
+from theano.tensor.nnet.tests.test_abstract_conv import Grouped_conv_noOptim, TestUnsharedConv
+from theano.tensor.nnet.tests.test_abstract_conv import TestAsymmetricPadding, TestCausalConv
 
 theano.config.dnn.enabled = "False"
 
@@ -30,8 +31,7 @@ class TestCorr2D(utt.InferShapeTester):
         self.filters.name = 'default_filters'
         if not conv.imported_scipy_signal and theano.config.cxx == "":
             raise SkipTest("CorrMM tests need SciPy or a c++ compiler")
-        if not theano.config.blas.ldflags:
-            raise SkipTest("CorrMM tests need a BLAS")
+        # This tests can run even when theano.config.blas.ldflags is empty.
 
     def validate(self, image_shape, filter_shape,
                  border_mode='valid', subsample=(1, 1),
@@ -41,6 +41,8 @@ class TestCorr2D(utt.InferShapeTester):
         :param image_shape: The constant shape info passed to corrMM.
         :param filter_shape: The constant shape info passed to corrMM.
         """
+        if not theano.config.cxx:
+            raise SkipTest("Need cxx to test conv2d")
         N_image_shape = [T.get_scalar_constant_value(T.as_tensor_variable(x))
                          for x in image_shape]
         N_filter_shape = [T.get_scalar_constant_value(T.as_tensor_variable(x))
@@ -68,15 +70,15 @@ class TestCorr2D(utt.InferShapeTester):
         theano_corr = theano.function([input, filters], output, mode=self.mode)
 
         # initialize input and compute result
-        image_data = numpy.random.random(N_image_shape).astype(self.dtype)
-        filter_data = numpy.random.random(N_filter_shape).astype(self.dtype)
+        image_data = np.random.random(N_image_shape).astype(self.dtype)
+        filter_data = np.random.random(N_filter_shape).astype(self.dtype)
         if non_contiguous:
-            image_data = numpy.transpose(image_data, axes=(0, 1, 3, 2))
+            image_data = np.transpose(image_data, axes=(0, 1, 3, 2))
             image_data = image_data.copy()
-            image_data = numpy.transpose(image_data, axes=(0, 1, 3, 2))
-            filter_data = numpy.transpose(filter_data, axes=(0, 1, 3, 2))
+            image_data = np.transpose(image_data, axes=(0, 1, 3, 2))
+            filter_data = np.transpose(filter_data, axes=(0, 1, 3, 2))
             filter_data = filter_data.copy()
-            filter_data = numpy.transpose(filter_data, axes=(0, 1, 3, 2))
+            filter_data = np.transpose(filter_data, axes=(0, 1, 3, 2))
             assert not image_data.flags['CONTIGUOUS']
             assert not filter_data.flags['CONTIGUOUS']
 
@@ -84,38 +86,38 @@ class TestCorr2D(utt.InferShapeTester):
 
         # REFERENCE IMPLEMENTATION
         # Testing correlation, not convolution. Reverse filters.
-        filter_data_corr = numpy.array(filter_data[:, :, ::-1, ::-1],
-                                       copy=True,
-                                       order='C')
+        filter_data_corr = np.array(filter_data[:, :, ::-1, ::-1],
+                                    copy=True,
+                                    order='C')
         orig_image_data = image_data
-        img_shape2d = numpy.array(N_image_shape[-2:])
-        fil_shape2d = numpy.array(N_filter_shape[-2:])
-        dil_shape2d = numpy.array(filter_dilation)
+        img_shape2d = np.array(N_image_shape[-2:])
+        fil_shape2d = np.array(N_filter_shape[-2:])
+        dil_shape2d = np.array(filter_dilation)
         dil_fil_shape2d = (fil_shape2d - 1) * dil_shape2d + 1
-        subsample2d = numpy.array(subsample)
+        subsample2d = np.array(subsample)
         if border_mode == 'full':
             padHW = (dil_fil_shape2d - 1)
         elif border_mode == 'valid':
-            padHW = numpy.array([0, 0])
+            padHW = np.array([0, 0])
         elif border_mode == 'half':
-            padHW = numpy.floor(dil_fil_shape2d / 2).astype('int32')
+            padHW = np.floor(dil_fil_shape2d / 2).astype('int32')
         elif isinstance(border_mode, tuple):
-            padHW = numpy.array(border_mode)
+            padHW = np.array(border_mode)
         elif isinstance(border_mode, integer_types):
-            padHW = numpy.array([border_mode, border_mode])
+            padHW = np.array([border_mode, border_mode])
         else:
             raise NotImplementedError('Unsupported border_mode {}'.format(border_mode))
-        out_shape2d = numpy.floor((img_shape2d + 2 * (padHW) - dil_fil_shape2d) / subsample2d) + 1
+        out_shape2d = np.floor((img_shape2d + 2 * (padHW) - dil_fil_shape2d) / subsample2d) + 1
         # avoid numpy deprecation
         out_shape2d = out_shape2d.astype('int32')
         out_shape = (N_image_shape[0], N_filter_shape[0]) + tuple(out_shape2d)
-        ref_output = numpy.zeros(out_shape)
+        ref_output = np.zeros(out_shape)
 
         # loop over output feature maps
         ref_output.fill(0)
-        image_data2 = numpy.zeros((N_image_shape[0], N_image_shape[1],
-                                   N_image_shape[2] + 2 * padHW[0],
-                                   N_image_shape[3] + 2 * padHW[1]))
+        image_data2 = np.zeros((N_image_shape[0], N_image_shape[1],
+                                N_image_shape[2] + 2 * padHW[0],
+                                N_image_shape[3] + 2 * padHW[1]))
         image_data2[:, :, padHW[0]:padHW[0] + N_image_shape[2],
                     padHW[1]:padHW[1] + N_image_shape[3]] = image_data
         image_data = image_data2
@@ -134,7 +136,7 @@ class TestCorr2D(utt.InferShapeTester):
                                 icol:icol + dil_fil_shape2d[1]:filter_dilation[1]] * filter2d[::-1, ::-1]
                             ).sum()
 
-        self.assertTrue(_allclose(theano_output, ref_output))
+        utt.assert_allclose(ref_output, theano_output)
 
         # TEST GRADIENT
         if verify_grad:
@@ -143,11 +145,10 @@ class TestCorr2D(utt.InferShapeTester):
 
     @attr('slow')
     def test_basic(self):
-        """
-        Tests that basic correlations work for odd and even
-        dimensions of image and filter shapes, as well as rectangular
-        images and filters.
-        """
+        # Tests that basic correlations work for odd and even
+        # dimensions of image and filter shapes, as well as rectangular
+        # images and filters.
+
         border_modes = ['valid', 'full', 'half', (1, 1), (2, 1), (1, 2),
                         (3, 3), 1]
         img_shapes = [(2, 2, 3, 3), (3, 2, 8, 8), (3, 2, 7, 5), (3, 2, 7, 5),
@@ -171,9 +172,8 @@ class TestCorr2D(utt.InferShapeTester):
 
     @attr('slow')
     def test_subsample(self):
-        """
-        Tests correlation where subsampling != (1,1)
-        """
+        # Tests correlation where subsampling != (1,1)
+
         self.validate((3, 2, 7, 5), (5, 2, 2, 3), 'valid', subsample=(2, 2))
         self.validate((3, 2, 7, 5), (5, 2, 2, 3), 'valid', subsample=(2, 1))
         self.validate((1, 1, 6, 6), (1, 1, 3, 3), 'valid', subsample=(3, 3))
@@ -193,9 +193,8 @@ class TestCorr2D(utt.InferShapeTester):
         self.validate((1, 1, 6, 6), (1, 1, 3, 3), 1, subsample=(3, 3))
 
     def test_filter_dilation(self):
-        """
-        Tests correlation where filter dilation != (1,1)
-        """
+        # Tests correlation where filter dilation != (1,1)
+
         self.validate((3, 2, 7, 5), (5, 2, 2, 3), 'valid', filter_dilation=(2, 2))
         self.validate((3, 2, 14, 10), (5, 2, 2, 3), 'valid', filter_dilation=(3, 1))
         self.validate((1, 1, 14, 14), (1, 1, 3, 3), 'valid', filter_dilation=(2, 3))
@@ -216,9 +215,8 @@ class TestCorr2D(utt.InferShapeTester):
 
     @attr('slow')
     def test_shape_Constant_tensor(self):
-        """
-        Tests correlation where the {image,filter}_shape is a Constant tensor.
-        """
+        # Tests correlation where the {image,filter}_shape is a Constant tensor.
+
         as_t = T.as_tensor_variable
         border_modes = ['valid', 'full', 'half', (1, 1), (2, 1), (1, 2), (3, 3), 1]
 
@@ -233,18 +231,16 @@ class TestCorr2D(utt.InferShapeTester):
             self.validate(as_t([3, 2, 7, 5]), as_t([5, 2, 2, 3]), border_mode)
 
     def test_invalid_filter_shape(self):
-        """
-        Tests scenario where filter_shape[1] != input_shape[1]
-        """
+        # Tests scenario where filter_shape[1] != input_shape[1]
+
         self.assertRaises(ValueError, self.validate,
                           (3, 2, 8, 8), (4, 3, 5, 5),
                           'valid')
 
     def test_full_mode(self):
-        """
-        Tests basic correlation in full mode and case where filter
-        is larger than the input image.
-        """
+        # Tests basic correlation in full mode and case where filter
+        # is larger than the input image.
+
         self.validate((3, 2, 5, 5), (4, 2, 8, 8), 'full')
 
         def f():
@@ -252,9 +248,8 @@ class TestCorr2D(utt.InferShapeTester):
         self.assertRaises(Exception, f)
 
     def test_wrong_input(self):
-        """
-        Make sure errors are raised when image and kernel are not 4D tensors
-        """
+        # Make sure errors are raised when image and kernel are not 4D tensors
+
         self.assertRaises(Exception, self.validate, (3, 2, 8, 8), (4, 2, 5, 5),
                           'valid', input=T.dmatrix())
         self.assertRaises(Exception, self.validate, (3, 2, 8, 8), (4, 2, 5, 5),
@@ -263,12 +258,13 @@ class TestCorr2D(utt.InferShapeTester):
                           'valid', input=T.dtensor3())
 
     def test_dtype_upcast(self):
-        """
-        Checks dtype upcast for CorrMM methods.
-        """
+        # Checks dtype upcast for CorrMM methods.
+
         def rand(shape, dtype='float64'):
-            r = numpy.asarray(numpy.random.rand(*shape), dtype=dtype)
+            r = np.asarray(np.random.rand(*shape), dtype=dtype)
             return r * 2 - 1
+        if not theano.config.cxx:
+            raise SkipTest("Need cxx to test conv2d")
 
         ops = [corr.CorrMM, corr.CorrMM_gradWeights, corr.CorrMM_gradInputs]
         a_shapes = [[4, 5, 6, 3], [1, 5, 6, 3], [1, 5, 6, 3]]
@@ -292,9 +288,11 @@ class TestCorr2D(utt.InferShapeTester):
     def test_infer_shape_forward(self):
         if theano.config.mode == "FAST_COMPILE":
             raise SkipTest("CorrMM don't work in FAST_COMPILE")
+        if not theano.config.cxx:
+            raise SkipTest("Need cxx for this test")
 
         def rand(*shape):
-            r = numpy.asarray(numpy.random.rand(*shape), dtype='float64')
+            r = np.asarray(np.random.rand(*shape), dtype='float64')
             return r * 2 - 1
         corrMM = corr.CorrMM
 
@@ -323,9 +321,11 @@ class TestCorr2D(utt.InferShapeTester):
     def test_infer_shape_gradW(self):
         if theano.config.mode == "FAST_COMPILE":
             raise SkipTest("CorrMM don't work in FAST_COMPILE")
+        if not theano.config.cxx:
+            raise SkipTest("Need cxx for this test")
 
         def rand(*shape):
-            r = numpy.asarray(numpy.random.rand(*shape), dtype='float64')
+            r = np.asarray(np.random.rand(*shape), dtype='float64')
             return r * 2 - 1
         corrMM = corr.CorrMM
         gradW = corr.CorrMM_gradWeights
@@ -361,9 +361,11 @@ class TestCorr2D(utt.InferShapeTester):
     def test_infer_shape_gradI(self):
         if theano.config.mode == "FAST_COMPILE":
             raise SkipTest("CorrMM don't work in FAST_COMPILE")
+        if not theano.config.cxx:
+            raise SkipTest("Need cxx for this test")
 
         def rand(*shape):
-            r = numpy.asarray(numpy.random.rand(*shape), dtype='float64')
+            r = np.asarray(np.random.rand(*shape), dtype='float64')
             return r * 2 - 1
         corrMM = corr.CorrMM
         gradI = corr.CorrMM_gradInputs
@@ -408,6 +410,68 @@ class TestCorr2D(utt.InferShapeTester):
         self.validate((3, 2, 7, 5), (5, 2, 2, 3), (1, 2), non_contiguous=True)
         self.validate((3, 2, 7, 5), (5, 2, 2, 3), (2, 1), non_contiguous=True)
         self.validate((3, 2, 7, 5), (5, 2, 2, 3), 2, non_contiguous=True)
+
+
+class TestGroupCorr2d(Grouped_conv_noOptim):
+    mode = theano.compile.get_mode("FAST_RUN").excluding('gpuarray')
+    conv_op = corr.CorrMM
+    conv_gradw_op = corr.CorrMM_gradWeights
+    conv_gradi_op = corr.CorrMM_gradInputs
+
+    def test_graph(self):
+        # define common values  first
+        groups = 3
+        bottom = np.random.rand(3, 6, 5, 5).astype(theano.config.floatX)
+        kern = np.random.rand(9, 2, 3, 3).astype(theano.config.floatX)
+        bottom_sym = T.tensor4('bottom')
+        kern_sym = T.tensor4('kern')
+
+        # grouped convolution graph
+        conv_group = self.conv(num_groups=groups)(bottom_sym, kern_sym)
+        gconv_func = theano.function([bottom_sym, kern_sym], conv_group, mode=self.mode)
+
+        # Graph for the normal hard way
+        kern_offset = kern_sym.shape[0] // groups
+        bottom_offset = bottom_sym.shape[1] // groups
+        split_conv_output = [self.conv()(bottom_sym[:, i * bottom_offset:(i + 1) * bottom_offset, :, :],
+                             kern_sym[i * kern_offset:(i + 1) * kern_offset, :, :, :])
+                             for i in range(groups)]
+        concatenated_output = T.concatenate(split_conv_output, axis=1)
+        conv_func = theano.function([bottom_sym, kern_sym], concatenated_output, mode=self.mode)
+
+        # calculate outputs for each graph
+        gconv_output = gconv_func(bottom, kern)
+        conv_output = conv_func(bottom, kern)
+
+        # compare values
+        utt.assert_allclose(gconv_output, conv_output)
+
+
+class TestUnsharedCorr2d(TestUnsharedConv):
+    if theano.config.mode == "FAST_COMPILE":
+        mode = theano.compile.get_mode("FAST_RUN").excluding('gpuarray')
+    else:
+        mode = None
+    conv2d_op = corr.CorrMM
+    conv2d_gradw_op = corr.CorrMM_gradWeights
+    conv2d_gradi_op = corr.CorrMM_gradInputs
+
+
+class TestAsymmetricCorr(TestAsymmetricPadding):
+    if theano.config.mode == "FAST_COMPILE":
+        mode = theano.compile.get_mode("FAST_RUN").excluding('gpuarray')
+    else:
+        mode = None
+    conv2d_op = corr.CorrMM
+    conv2d_gradw_op = corr.CorrMM_gradWeights
+    conv2d_gradi_op = corr.CorrMM_gradInputs
+
+
+class TestCausalCorr(TestCausalConv):
+    if theano.config.mode == "FAST_COMPILE":
+        mode = theano.compile.get_mode("FAST_RUN").excluding('gpuarray')
+    else:
+        mode = None
 
 
 if __name__ == '__main__':

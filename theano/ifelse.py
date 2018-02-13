@@ -15,18 +15,17 @@ from copy import deepcopy
 from theano.compat import izip
 import logging
 
-import numpy
+import numpy as np
 
 import theano.tensor
 from theano.tensor import TensorType
 from theano import gof
-from theano.gof import PureOp, Apply
+from theano.gof import Op, Apply
 
 from six import iteritems
 from six.moves import xrange
 from theano.compile import optdb
 from theano.tensor import opt
-from theano.scan_module.scan_utils import find_up
 from theano.scan_module.scan_utils import clone
 
 
@@ -41,7 +40,7 @@ __contact__ = "Razvan Pascanu <r.pascanu@gmail>"
 _logger = logging.getLogger('theano.ifelse')
 
 
-class IfElse(PureOp):
+class IfElse(Op):
     """
     Op that provides conditional graph evaluation if used with the CVM/VM
     linkers. Note that there exist a helpful function `ifelse` that should
@@ -167,13 +166,15 @@ class IfElse(PureOp):
             "Wrong number of arguments to make_node: "
             "expected %d, got %d" % (2 * self.n_outs, len(args))
         )
+        c = theano.tensor.as_tensor_variable(c)
         if not self.gpu:
-            # When gpu is true, we are given only cuda ndarrays, and we want
-            # to keep them be cuda ndarrays
-            c = theano.tensor.as_tensor_variable(c)
+            # When gpu is true, we are given only gpuarrays, and we want
+            # to keep them as gpuarrays
             nw_args = []
             for x in args:
-                if isinstance(x, theano.Variable):
+                if hasattr(x, '_as_TensorVariable'):
+                    nw_args.append(x._as_TensorVariable())
+                elif isinstance(x, theano.Variable):
                     nw_args.append(x)
                 else:
                     nw_args.append(theano.tensor.as_tensor_variable(x))
@@ -235,7 +236,7 @@ class IfElse(PureOp):
                 if_true_op(*if_true, **dict(return_list=True)) +
                 if_false_op(*if_false, **dict(return_list=True)))
 
-    def make_thunk(self, node, storage_map, compute_map, no_recycling):
+    def make_thunk(self, node, storage_map, compute_map, no_recycling, impl=None):
         cond = node.inputs[0]
         ts = node.inputs[1:][:self.n_outs]
         fs = node.inputs[1:][self.n_outs:]
@@ -258,7 +259,7 @@ class IfElse(PureOp):
                             if self.as_view:
                                 storage_map[out][0] = val
                             # Work around broken numpy deepcopy
-                            elif type(val) in (numpy.ndarray, numpy.memmap):
+                            elif type(val) in (np.ndarray, np.memmap):
                                 storage_map[out][0] = val.copy()
                             else:
                                 storage_map[out][0] = deepcopy(val)
@@ -275,7 +276,7 @@ class IfElse(PureOp):
                             # improves
                             # Work around broken numpy deepcopy
                             val = storage_map[f][0]
-                            if type(val) in (numpy.ndarray, numpy.memmap):
+                            if type(val) in (np.ndarray, np.memmap):
                                 storage_map[out][0] = val.copy()
                             else:
                                 storage_map[out][0] = deepcopy(val)
@@ -576,7 +577,7 @@ class CondMerge(gof.Optimizer):
         merging_node = cond_nodes[0]
         for proposal in cond_nodes[1:]:
             if (proposal.inputs[0] == merging_node.inputs[0] and
-                    not find_up(proposal, merging_node)):
+                    not gof.graph.is_in_ancestors(proposal, merging_node)):
                 # Create a list of replacements for proposal
                 mn_ts = merging_node.inputs[1:][:merging_node.op.n_outs]
                 mn_fs = merging_node.inputs[1:][merging_node.op.n_outs:]
@@ -681,8 +682,8 @@ def cond_merge_random_op(main_node):
     merging_node = cond_nodes[0]
     for proposal in cond_nodes[1:]:
         if (proposal.inputs[0] == merging_node.inputs[0] and
-                not find_up(proposal, merging_node) and
-                not find_up(merging_node, proposal)):
+                not gof.graph.is_in_ancestors(proposal, merging_node) and
+                not gof.graph.is_in_ancestors(merging_node, proposal)):
             # Create a list of replacements for proposal
             mn_ts = merging_node.inputs[1:][:merging_node.op.n_outs]
             mn_fs = merging_node.inputs[1:][merging_node.op.n_outs:]
